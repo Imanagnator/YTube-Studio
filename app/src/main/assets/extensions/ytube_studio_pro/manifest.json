@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "YTube Studio Pro",
+  "version": "1.0.0",
+  "author": "Tamal Mitra",
+  "description": "Custom built-in YouTube Studio creator extension: mobile-friendly PC layout, auto-collapse sidebar, live SEO score audit, description templates, smart tag generator, HD thumbnail download, Shadow-DOM upload helper, and revenue privacy blur.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ytube-studio-pro@tamalmitra.app"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "*://studio.youtube.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://studio.youtube.com/*"
+      ],
+      "js": ["studio_pro.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

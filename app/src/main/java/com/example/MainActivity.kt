@@ -77,6 +77,7 @@ import com.example.ui.components.DownloadPickerBottomSheet
 import com.example.ui.components.InAppGoogleLoginDialog
 import com.example.ui.components.MiniAudioPlayerBar
 import com.example.ui.components.NotificationsBottomSheet
+import com.example.ui.components.StudioProBottomSheet
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.StreamScreen
 import com.example.ui.screens.StudioScreen
@@ -162,9 +163,9 @@ fun TubeDeckAppRoot(
     val isBenchmarkingDns by viewModel.isBenchmarkingDns.collectAsStateWithLifecycle()
     val videoProbeState by viewModel.videoProbeState.collectAsStateWithLifecycle()
     val downloadSheetUrl by viewModel.downloadSheetUrl.collectAsStateWithLifecycle()
-    val showAuthDialog by viewModel.showAuthDialog.collectAsStateWithLifecycle()
-    val authDialogUrl by viewModel.authDialogUrl.collectAsStateWithLifecycle()
-    val authDialogTitle by viewModel.authDialogTitle.collectAsStateWithLifecycle()
+    val activePopup by viewModel.activePopup.collectAsStateWithLifecycle()
+    val studioProMetrics by viewModel.studioProMetrics.collectAsStateWithLifecycle()
+    val showStudioProSheet by viewModel.showStudioProSheet.collectAsStateWithLifecycle()
     val showNotificationsSheet by viewModel.showNotificationsSheet.collectAsStateWithLifecycle()
     val showDownloadSheet by viewModel.showDownloadSheet.collectAsStateWithLifecycle()
     val isUpdatingYtDlp by viewModel.isUpdatingYtDlp.collectAsStateWithLifecycle()
@@ -502,12 +503,14 @@ fun TubeDeckAppRoot(
                                     isFullScreen = isFullScreen,
                                     tabState = studioState,
                                     prefs = prefs,
+                                    studioProMetrics = studioProMetrics,
                                     shortcuts = viewModel.studioShortcuts,
                                     unreadNotifications = unreadCount,
                                     onBack = viewModel::navigateStudioBack,
                                     onReload = viewModel::reloadStudio,
                                     onSelectShortcut = viewModel::openStudioShortcut,
                                     onToggleKeepAwake = viewModel::toggleKeepScreenAwakeUpload,
+                                    onOpenStudioPro = viewModel::openStudioProSheet,
                                     onOpenNotifications = viewModel::openNotificationsSheet
                                 )
                             }
@@ -598,18 +601,27 @@ fun TubeDeckAppRoot(
         )
     }
 
-    if (showAuthDialog) {
-        val rt = viewModel.getRuntime()
-        if (rt != null) {
-            val authSession = remember(rt, authDialogUrl) {
-                viewModel.geckoEngine.getOrCreateAuthSession(rt, authDialogUrl)
-            }
-            InAppGoogleLoginDialog(
-                authSession = authSession,
-                title = authDialogTitle,
-                targetUrl = authDialogUrl,
-                onDismiss = viewModel::closeInAppGoogleLogin
-            )
-        }
+    if (showStudioProSheet) {
+        StudioProBottomSheet(
+            prefs = prefs,
+            metrics = studioProMetrics,
+            onDismiss = viewModel::closeStudioProSheet,
+            onToggleEnabled = viewModel::toggleStudioProEnabled,
+            onToggleAutoCollapse = viewModel::toggleStudioProAutoCollapse,
+            onToggleFocusMode = viewModel::toggleStudioProFocusMode,
+            onToggleSeoHud = viewModel::toggleStudioProSeoHud,
+            onTogglePrivacyBlur = viewModel::toggleStudioProPrivacyBlur,
+            onSaveCustomTemplate = viewModel::saveStudioProCustomTemplate,
+            onTriggerAction = viewModel::triggerStudioProAction
+        )
+    }
+
+    activePopup?.let { popup ->
+        InAppGoogleLoginDialog(
+            popup = popup,
+            onNavigateBack = viewModel::navigatePopupBack,
+            onCloseTopPopup = viewModel::closeTopPopup,
+            onDoneSync = viewModel::doneSyncPopup
+        )
     }
 }

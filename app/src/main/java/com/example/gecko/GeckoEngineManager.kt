@@ -4,7 +4,9 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.util.Log
+import android.webkit.MimeTypeMap
 import com.example.data.model.QualityOption
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,7 +27,9 @@ import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebRequestError
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 data class BrowserTabState(
     val currentUrl: String = "",
@@ -61,6 +65,31 @@ data class LiveQualityState(
     val videoUrl: String = ""
 )
 
+data class StudioProMetrics(
+    val isEditorPage: Boolean = false,
+    val videoId: String = "",
+    val titleLen: Int = -1,
+    val descLen: Int = -1,
+    val hasChapters: Boolean = false,
+    val hashtagCount: Int = 0,
+    val tagCount: Int = 0,
+    val tagsCharCount: Int = 0,
+    val hasCustomThumb: Boolean = false,
+    val seoScore: Int = -1,
+    val topTip: String = "Open any video in Studio to inspect live SEO"
+)
+
+data class ActivePopupState(
+    val id: Long,
+    val session: GeckoSession,
+    val title: String,
+    val currentUrl: String,
+    val isGoogleFlow: Boolean,
+    val canGoBack: Boolean = false,
+    val isLoading: Boolean = true,
+    val depth: Int = 1
+)
+
 sealed interface GeckoEvent {
     data class BlockedExternalNavigation(val url: String) : GeckoEvent
     data class AdBlocked(val countDelta: Long) : GeckoEvent
@@ -69,6 +98,7 @@ sealed interface GeckoEvent {
     data class OpenVideoInMobileStream(val mobileUrl: String) : GeckoEvent
     data class OpenUrlInDesktopStudio(val studioUrl: String) : GeckoEvent
     data class InPageDownloadRequested(val url: String, val title: String, val cookiesTxt: String) : GeckoEvent
+    data class StudioProToast(val message: String) : GeckoEvent
     data class FileUploadRequested(
         val mimeTypes: Array<String>,
         val allowMultiple: Boolean,
@@ -106,12 +136,16 @@ class GeckoEngineManager(private val context: Context) {
             "gstatic.com",
             "googleusercontent.com",
             "googleapis.com",
-            "clients.google.com"
+            "clients.google.com",
+            "clients6.google.com",
+            "upload.video.google.com",
+            "www.google.com"
         )
 
         private val STUDIO_AUTH_OR_INFRA_HOSTS = setOf(
             "studio.youtube.com",
             "upload.youtube.com",
+            "upload.video.google.com",
             "accounts.google.com",
             "accounts.youtube.com",
             "myaccount.google.com",
@@ -123,6 +157,8 @@ class GeckoEngineManager(private val context: Context) {
             "googleusercontent.com",
             "googleapis.com",
             "clients.google.com",
+            "clients6.google.com",
+            "www.google.com",
             "googlevideo.com",
             "ytimg.com",
             "ggpht.com"
@@ -138,7 +174,9 @@ class GeckoEngineManager(private val context: Context) {
             "auth0.com",
             "challenges.cloudflare.com",
             "hcaptcha.com",
-            "recaptcha.net"
+            "recaptcha.net",
+            "appleid.apple.com",
+            "firebaseapp.com"
         )
     }
 
@@ -148,6 +186,7 @@ class GeckoEngineManager(private val context: Context) {
     @Volatile
     private var runtime: GeckoRuntime? = null
     private var nativePort: WebExtension.Port? = null
+    private var studioProPort: WebExtension.Port? = null
     private var uBlockExtension: WebExtension? = null
     private val installedExtensions = ConcurrentHashMap<String, WebExtension>()
     private var disabledExtensionIdsCache: Set<String> = emptySet()
@@ -155,11 +194,26 @@ class GeckoEngineManager(private val context: Context) {
     @Volatile
     private var isAwaitingFilePicker: Boolean = false
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val ioExecutor = Executors.newSingleThreadExecutor()
     private var hasReloadedForFirstUBlock = false
 
     val streamSession: GeckoSession by lazy { createStreamSession() }
     val studioSession: GeckoSession by lazy { createStudioSession() }
-    private var authSession: GeckoSession? = null
+    private val popupStack = ArrayDeque<ActivePopupState>()
+    private var nextPopupId = 1L
+
+    private val _activePopup = MutableStateFlow<ActivePopupState?>(null)
+    val activePopup: StateFlow<ActivePopupState?> = _activePopup.asStateFlow()
+
+    private val _studioProMetrics = MutableStateFlow(StudioProMetrics())
+    val studioProMetrics: StateFlow<StudioProMetrics> = _studioProMetrics.asStateFlow()
+
+    private var cachedStudioProEnabled = true
+    private var cachedStudioProAutoCollapse = true
+    private var cachedStudioProFocusMode = false
+    private var cachedStudioProSeoHud = true
+    private var cachedStudioProPrivacyBlur = false
+    private var cachedStudioProCustomTemplate = ""
 
     private var activeMediaSession: MediaSession? = null
 
@@ -229,12 +283,12 @@ class GeckoEngineManager(private val context: Context) {
     fun getOrCreateRuntime(initialDohUrl: String): GeckoRuntime {
         runtime?.let { return it }
 
-        // Balanced content blocking: prevents post-login Google/YouTube cookie stalls & avoids
-        // double-filtering every request alongside uBlock Origin
+        // ACCEPT_NON_TRACKERS lets YouTube upload endpoints & extension sign-in domains (e.g. vidIQ)
+        // share auth cookies seamlessly with studio.youtube.com while blocking known ad trackers.
         val contentBlocking = ContentBlocking.Settings.Builder()
             .antiTracking(ContentBlocking.AntiTracking.DEFAULT)
             .safeBrowsing(ContentBlocking.SafeBrowsing.DEFAULT)
-            .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS)
+            .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS)
             .build()
 
         val settingsBuilder = GeckoRuntimeSettings.Builder()
@@ -260,8 +314,10 @@ class GeckoEngineManager(private val context: Context) {
 
         val created = GeckoRuntime.create(context.applicationContext, settingsBuilder.build())
         runtime = created
+        cleanupOldStagedUploads()
         configureWebExtensionController(created)
         installBuiltInCompanionExtension(created)
+        installBuiltInStudioProExtension(created)
         ensureUBlockOriginInstalled(created)
         return created
     }
@@ -327,6 +383,7 @@ class GeckoEngineManager(private val context: Context) {
             { installedList ->
                 val list = installedList.orEmpty()
                 list.forEach { ext ->
+                    attachExtensionTabDelegate(rt, ext)
                     val spec = ManagedExtensionsCatalog.findById(ext.id)
                     if (spec != null) {
                         installedExtensions[ext.id] = ext
@@ -360,6 +417,52 @@ class GeckoEngineManager(private val context: Context) {
                 installBundledUBlockOrigin(rt)
             }
         )
+    }
+
+    /**
+     * Connects browser.tabs.create() and browser.runtime.openOptionsPage() from ANY installed
+     * Mozilla WebExtension (e.g., vidIQ Vision Log in / Sign up, SponsorBlock options, uBlock dashboard)
+     * directly to our synced in-app popup modal while keeping the extension's tab handle alive.
+     */
+    private fun attachExtensionTabDelegate(rt: GeckoRuntime, ext: WebExtension) {
+        ext.setTabDelegate(object : WebExtension.TabDelegate {
+            override fun onNewTab(
+                source: WebExtension,
+                createDetails: WebExtension.CreateTabDetails
+            ): GeckoResult<GeckoSession> {
+                val targetUrl = createDetails.url.orEmpty()
+                val extName = source.metaData.name.orEmpty()
+                val title = if (targetUrl.isNotBlank()) {
+                    resolveExtensionPopupTitle(targetUrl, extName)
+                } else {
+                    extName.ifBlank { "Extension Account" }
+                }
+                val popupSession = openSyncedPopupSession(
+                    rt = rt,
+                    initialUrl = targetUrl,
+                    title = title,
+                    isGoogleFlow = false,
+                    autoLoadInitialUrl = false,
+                    sourceExtension = source
+                )
+                return GeckoResult.fromValue(popupSession)
+            }
+
+            override fun onOpenOptionsPage(source: WebExtension) {
+                val optionsUrl = source.metaData.optionsPageUrl
+                val extName = source.metaData.name.orEmpty()
+                if (!optionsUrl.isNullOrBlank()) {
+                    openSyncedPopupSession(
+                        rt = rt,
+                        initialUrl = optionsUrl,
+                        title = "${extName.ifBlank { "Extension" }} Settings",
+                        isGoogleFlow = false,
+                        autoLoadInitialUrl = true,
+                        sourceExtension = source
+                    )
+                }
+            }
+        })
     }
 
     private fun installBundledUBlockOrigin(rt: GeckoRuntime) {
@@ -440,6 +543,7 @@ class GeckoEngineManager(private val context: Context) {
         detail: String,
         triggerFirstReload: Boolean = false
     ) {
+        attachExtensionTabDelegate(rt, ext)
         uBlockExtension = ext
         installedExtensions[ext.id] = ext
         val version = ext.metaData.version.takeIf { it.isNotBlank() } ?: UBlockOriginUpdater.BUNDLED_VERSION
@@ -671,6 +775,7 @@ class GeckoEngineManager(private val context: Context) {
                             triggerFirstReload = true
                         )
                     } else {
+                        attachExtensionTabDelegate(rt, ext)
                         installedExtensions[spec.id] = ext
                         if (enableAfterInstall) {
                             rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER).accept(
@@ -825,8 +930,49 @@ class GeckoEngineManager(private val context: Context) {
     }
 
     fun triggerStudioUploadDialog() {
-        val msg = JSONObject().apply { put("type", "triggerStudioUpload") }
-        runCatching { nativePort?.postMessage(msg) }
+        val studioProMsg = JSONObject().apply {
+            put("type", "studioProAction")
+            put("action", "triggerUpload")
+        }
+        runCatching { studioProPort?.postMessage(studioProMsg) }
+        val legacyMsg = JSONObject().apply { put("type", "triggerStudioUpload") }
+        runCatching { nativePort?.postMessage(legacyMsg) }
+    }
+
+    fun updateStudioProConfig(
+        enabled: Boolean,
+        autoCollapseSidebar: Boolean,
+        focusMode: Boolean,
+        seoHudEnabled: Boolean,
+        privacyBlur: Boolean,
+        customTemplate: String
+    ) {
+        cachedStudioProEnabled = enabled
+        cachedStudioProAutoCollapse = autoCollapseSidebar
+        cachedStudioProFocusMode = focusMode
+        cachedStudioProSeoHud = seoHudEnabled
+        cachedStudioProPrivacyBlur = privacyBlur
+        cachedStudioProCustomTemplate = customTemplate
+
+        val msg = JSONObject().apply {
+            put("type", "updateStudioProConfig")
+            put("enabled", enabled)
+            put("autoCollapseSidebar", autoCollapseSidebar)
+            put("focusMode", focusMode)
+            put("seoHudEnabled", seoHudEnabled)
+            put("privacyBlur", privacyBlur)
+            put("customTemplate", customTemplate)
+        }
+        runCatching { studioProPort?.postMessage(msg) }
+    }
+
+    fun sendStudioProAction(action: String, payload: String = "") {
+        val msg = JSONObject().apply {
+            put("type", "studioProAction")
+            put("action", action)
+            put("payload", payload)
+        }
+        runCatching { studioProPort?.postMessage(msg) }
     }
 
     fun requestQualityStateRefresh() {
@@ -948,6 +1094,75 @@ class GeckoEngineManager(private val context: Context) {
             )
     }
 
+    private fun installBuiltInStudioProExtension(rt: GeckoRuntime) {
+        rt.webExtensionController
+            .ensureBuiltIn(
+                "resource://android/assets/extensions/ytube_studio_pro/",
+                "ytube-studio-pro@tamalmitra.app"
+            )
+            .accept(
+                { extension ->
+                    if (extension != null) {
+                        attachExtensionTabDelegate(rt, extension)
+                        extension.setMessageDelegate(
+                            object : WebExtension.MessageDelegate {
+                                override fun onConnect(port: WebExtension.Port) {
+                                    studioProPort = port
+                                    port.setDelegate(object : WebExtension.PortDelegate {
+                                        override fun onPortMessage(
+                                            message: Any,
+                                            port: WebExtension.Port
+                                        ) {
+                                            val json = message as? JSONObject ?: return
+                                            when (json.optString("type")) {
+                                                "studioProMetrics" -> {
+                                                    _studioProMetrics.value = StudioProMetrics(
+                                                        isEditorPage = json.optBoolean("isEditorPage", false),
+                                                        videoId = json.optString("videoId", ""),
+                                                        titleLen = json.optInt("titleLen", -1),
+                                                        descLen = json.optInt("descLen", -1),
+                                                        hasChapters = json.optBoolean("hasChapters", false),
+                                                        hashtagCount = json.optInt("hashtagCount", 0),
+                                                        tagCount = json.optInt("tagCount", 0),
+                                                        tagsCharCount = json.optInt("tagsCharCount", 0),
+                                                        hasCustomThumb = json.optBoolean("hasCustomThumb", false),
+                                                        seoScore = json.optInt("seoScore", -1),
+                                                        topTip = json.optString("topTip", "Open any video in Studio to inspect live SEO")
+                                                    )
+                                                }
+                                                "studioProToast" -> {
+                                                    val msg = json.optString("message", "")
+                                                    if (msg.isNotBlank()) {
+                                                        _events.tryEmit(GeckoEvent.StudioProToast(msg))
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        override fun onDisconnect(port: WebExtension.Port) {
+                                            if (studioProPort == port) studioProPort = null
+                                        }
+                                    })
+                                    updateStudioProConfig(
+                                        enabled = cachedStudioProEnabled,
+                                        autoCollapseSidebar = cachedStudioProAutoCollapse,
+                                        focusMode = cachedStudioProFocusMode,
+                                        seoHudEnabled = cachedStudioProSeoHud,
+                                        privacyBlur = cachedStudioProPrivacyBlur,
+                                        customTemplate = cachedStudioProCustomTemplate
+                                    )
+                                }
+                            },
+                            "ytube_studio_pro"
+                        )
+                    }
+                },
+                { error ->
+                    Log.e(TAG, "Failed to install built-in YTube Studio Pro extension", error)
+                }
+            )
+    }
+
     private fun createStreamSession(): GeckoSession {
         val settings = GeckoSessionSettings.Builder()
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
@@ -1028,59 +1243,264 @@ class GeckoEngineManager(private val context: Context) {
         return session
     }
 
-    fun getOrCreateAuthSession(rt: GeckoRuntime, initialUrl: String = GOOGLE_LOGIN_URL): GeckoSession {
-        val existing = authSession
-        if (existing != null) {
-            if (initialUrl.isNotBlank()) {
-                existing.loadUri(initialUrl)
-            }
-            return existing
-        }
-        val settings = GeckoSessionSettings.Builder()
-            .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+    fun openGoogleSignInPopup(): GeckoSession? {
+        val rt = runtime ?: return null
+        return openSyncedPopupSession(
+            rt = rt,
+            initialUrl = GOOGLE_LOGIN_URL,
+            title = "Google Sign-In (Synced Session)",
+            isGoogleFlow = true,
+            autoLoadInitialUrl = true,
+            sourceExtension = null
+        )
+    }
+
+    fun openExtensionPopupUrl(url: String, title: String = resolveExtensionPopupTitle(url)): GeckoSession? {
+        val rt = runtime ?: return null
+        return openSyncedPopupSession(
+            rt = rt,
+            initialUrl = url,
+            title = title,
+            isGoogleFlow = url.contains("accounts.google.com", ignoreCase = true),
+            autoLoadInitialUrl = true,
+            sourceExtension = null
+        )
+    }
+
+    /**
+     * Creates a real, open GeckoSession for Google Sign-In, WebExtension browser.tabs.create(),
+     * or window.open() OAuth popups (such as vidIQ -> Continue with Google), preserving window.opener,
+     * postMessage, and shared cookies across the entire app.
+     */
+    private fun openSyncedPopupSession(
+        rt: GeckoRuntime,
+        initialUrl: String,
+        title: String,
+        isGoogleFlow: Boolean,
+        autoLoadInitialUrl: Boolean,
+        sourceExtension: WebExtension? = null
+    ): GeckoSession {
+        val settingsBuilder = GeckoSessionSettings.Builder()
             .usePrivateMode(false)
-            .build()
-        val session = GeckoSession(settings)
-        val isGoogleFlow = initialUrl.contains("accounts.google.com", ignoreCase = true)
+        if (!isGoogleFlow) {
+            // Match Desktop Firefox UA for extension auth popups (vidIQ, SponsorBlock, etc.)
+            settingsBuilder
+                .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
+                .userAgentOverride(DESKTOP_FIREFOX_UA)
+        } else {
+            settingsBuilder.userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+        }
+        val session = GeckoSession(settingsBuilder.build())
+        val popupId = synchronized(popupStack) { nextPopupId++ }
+
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLoadRequest(
                 session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny> {
                 val uri = request.uri
-                if (isAllowedHost(uri) || isExtensionTrustedUrl(uri)) {
-                    // Auto-complete only for the dedicated Google Sign-In flow when landing back on YouTube/Studio
-                    val host = runCatching { Uri.parse(uri).host?.lowercase() }.getOrNull().orEmpty()
-                    if (isGoogleFlow && (host == "m.youtube.com" || host == "www.youtube.com" || host == "youtube.com" || host == "studio.youtube.com")) {
-                        _isLoggedInLikely.value = true
-                        _events.tryEmit(GeckoEvent.LoginCompleted(uri))
-                    }
-                    return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+                val allowedScheme = uri.startsWith("https://", ignoreCase = true) ||
+                    uri.startsWith("http://", ignoreCase = true) ||
+                    uri.startsWith("moz-extension://", ignoreCase = true) ||
+                    uri.startsWith("about:", ignoreCase = true) ||
+                    uri.startsWith("blob:", ignoreCase = true) ||
+                    uri.startsWith("data:", ignoreCase = true)
+                if (!allowedScheme) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
                 }
-                _events.tryEmit(GeckoEvent.BlockedExternalNavigation(uri))
-                return GeckoResult.fromValue(AllowOrDeny.DENY)
+
+                // Auto-complete only for the dedicated Google Sign-In flow when landing back on YouTube/Studio
+                val host = runCatching { Uri.parse(uri).host?.lowercase() }.getOrNull().orEmpty()
+                if (isGoogleFlow && (host == "m.youtube.com" || host == "www.youtube.com" || host == "youtube.com" || host == "studio.youtube.com")) {
+                    _isLoggedInLikely.value = true
+                    _events.tryEmit(GeckoEvent.LoginCompleted(uri))
+                }
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
             }
 
             override fun onNewSession(
                 session: GeckoSession,
                 uri: String
             ): GeckoResult<GeckoSession> {
-                if (isAllowedHost(uri) || isExtensionTrustedUrl(uri)) {
-                    session.loadUri(uri)
+                // Support nested OAuth popups (e.g. vidIQ Login -> "Continue with Google" popup)
+                // while keeping window.opener & postMessage 100% intact!
+                val childTitle = if (uri.contains("accounts.google.com", ignoreCase = true)) {
+                    "Google Sign-In"
+                } else {
+                    resolveExtensionPopupTitle(uri, title)
                 }
-                return GeckoResult.fromValue(null)
+                val child = openSyncedPopupSession(
+                    rt = rt,
+                    initialUrl = uri,
+                    title = childTitle,
+                    isGoogleFlow = false,
+                    autoLoadInitialUrl = false,
+                    sourceExtension = sourceExtension
+                )
+                return GeckoResult.fromValue(child)
+            }
+
+            override fun onLocationChange(
+                session: GeckoSession,
+                url: String?,
+                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                val safeUrl = url ?: return
+                updatePopupEntry(popupId) { it.copy(currentUrl = safeUrl) }
+            }
+
+            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+                updatePopupEntry(popupId) { it.copy(canGoBack = canGoBack) }
             }
         }
+
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                updatePopupEntry(popupId) { it.copy(isLoading = true, currentUrl = url) }
+            }
+
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                updatePopupEntry(popupId) { it.copy(isLoading = false) }
+            }
+        }
+
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(session: GeckoSession, pageTitle: String?) {
+                if (!pageTitle.isNullOrBlank()) {
+                    updatePopupEntry(popupId) { it.copy(title = pageTitle) }
+                }
+            }
+
+            override fun onCloseRequest(session: GeckoSession) {
+                // OAuth popup called window.close() after finishing authentication!
+                mainHandler.post { closePopupById(popupId, reloadStudioIfEmpty = !isGoogleFlow) }
+            }
+        }
+
+        attachFilePromptDelegate(session)
+
+        // Allow extensions to close/update tabs they created via browser.tabs.remove() / update()
+        val sessionTabDelegate = object : WebExtension.SessionTabDelegate {
+            override fun onCloseTab(
+                source: WebExtension?,
+                tabSession: GeckoSession
+            ): GeckoResult<AllowOrDeny> {
+                mainHandler.post { closePopupById(popupId, reloadStudioIfEmpty = true) }
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+            }
+
+            override fun onUpdateTab(
+                source: WebExtension,
+                tabSession: GeckoSession,
+                details: WebExtension.UpdateTabDetails
+            ): GeckoResult<AllowOrDeny> {
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+            }
+        }
+        if (sourceExtension != null) {
+            runCatching { session.webExtensionController.setTabDelegate(sourceExtension, sessionTabDelegate) }
+        }
+        installedExtensions.values.forEach { ext ->
+            runCatching { session.webExtensionController.setTabDelegate(ext, sessionTabDelegate) }
+        }
+
         session.open(rt)
         runCatching { rt.webExtensionController.setTabActive(session, true) }
-        session.loadUri(initialUrl.ifBlank { GOOGLE_LOGIN_URL })
-        authSession = session
+
+        val entry = ActivePopupState(
+            id = popupId,
+            session = session,
+            title = title,
+            currentUrl = initialUrl,
+            isGoogleFlow = isGoogleFlow,
+            depth = synchronized(popupStack) { popupStack.size + 1 }
+        )
+        synchronized(popupStack) {
+            popupStack.addLast(entry)
+            _activePopup.value = entry
+        }
+
+        if (autoLoadInitialUrl && initialUrl.isNotBlank()) {
+            session.loadUri(initialUrl)
+        }
         return session
     }
 
-    fun closeAuthSession() {
-        authSession?.close()
-        authSession = null
+    private fun updatePopupEntry(popupId: Long, transform: (ActivePopupState) -> ActivePopupState) {
+        synchronized(popupStack) {
+            val idx = popupStack.indexOfFirst { it.id == popupId }
+            if (idx >= 0) {
+                val updated = transform(popupStack[idx])
+                popupStack[idx] = updated
+                if (_activePopup.value?.id == popupId) {
+                    _activePopup.value = updated
+                }
+            }
+        }
+    }
+
+    fun closePopupById(popupId: Long, reloadStudioIfEmpty: Boolean = false) {
+        var closed: ActivePopupState? = null
+        var remainingTop: ActivePopupState? = null
+        synchronized(popupStack) {
+            val idx = popupStack.indexOfFirst { it.id == popupId }
+            if (idx >= 0) {
+                closed = popupStack.removeAt(idx)
+            }
+            remainingTop = popupStack.lastOrNull()
+            _activePopup.value = remainingTop
+        }
+        closed?.let { entry ->
+            runCatching {
+                runtime?.webExtensionController?.setTabActive(entry.session, false)
+                entry.session.close()
+            }
+        }
+        val rt = runtime
+        if (remainingTop != null) {
+            runCatching { rt?.webExtensionController?.setTabActive(remainingTop!!.session, true) }
+        } else {
+            runCatching {
+                if (studioSession.isOpen) {
+                    rt?.webExtensionController?.setTabActive(studioSession, true)
+                    if (reloadStudioIfEmpty) {
+                        studioSession.reload()
+                    }
+                }
+            }
+        }
+    }
+
+    fun closeTopPopupSession(): Boolean {
+        val top = synchronized(popupStack) { popupStack.lastOrNull() } ?: return false
+        closePopupById(top.id, reloadStudioIfEmpty = !top.isGoogleFlow)
+        return true
+    }
+
+    fun closeAllPopupSessions(reloadStudioIfExtension: Boolean = false) {
+        val toClose = mutableListOf<ActivePopupState>()
+        var hadExtensionPopup = false
+        synchronized(popupStack) {
+            while (popupStack.isNotEmpty()) {
+                val item = popupStack.removeLast()
+                if (!item.isGoogleFlow) hadExtensionPopup = true
+                toClose.add(item)
+            }
+            _activePopup.value = null
+        }
+        toClose.forEach { entry ->
+            runCatching {
+                runtime?.webExtensionController?.setTabActive(entry.session, false)
+                entry.session.close()
+            }
+        }
+        if (reloadStudioIfExtension && hadExtensionPopup && studioSession.isOpen) {
+            runCatching {
+                runtime?.webExtensionController?.setTabActive(studioSession, true)
+                studioSession.reload()
+            }
+        }
     }
 
     fun openStreamHome(rt: GeckoRuntime) {
@@ -1139,7 +1559,108 @@ class GeckoEngineManager(private val context: Context) {
         isAwaitingFilePicker = false
         val cb = pendingFileCallback
         pendingFileCallback = null
-        cb?.invoke(uris)
+        if (cb == null) return
+
+        if (uris.isNullOrEmpty()) {
+            cb.invoke(null)
+            return
+        }
+
+        // Stage picked SAF content:// URIs into our private app cache on a background IO thread
+        // and pass native file:// URIs to GeckoView's FilePrompt.confirm().
+        // This completely bypasses Android 11-16 Scoped Storage failures in GeckoView's IntentUtils!
+        _events.tryEmit(GeckoEvent.StudioProToast("Preparing file for YouTube Studio upload..."))
+        ioExecutor.execute {
+            val stagedUris = stageUrisToPrivateCache(uris)
+            mainHandler.post {
+                if (stagedUris.isNotEmpty()) {
+                    _events.tryEmit(GeckoEvent.StudioProToast("File ready — starting YouTube Studio upload"))
+                    cb.invoke(stagedUris)
+                } else {
+                    _events.tryEmit(GeckoEvent.StudioProToast("Could not read selected file — try another file"))
+                    cb.invoke(null)
+                }
+            }
+        }
+    }
+
+    private fun stageUrisToPrivateCache(uris: Array<Uri>): Array<Uri> {
+        val stageDir = File(context.cacheDir, "studio_uploads").apply { mkdirs() }
+        val result = mutableListOf<Uri>()
+
+        for (uri in uris) {
+            if ("file".equals(uri.scheme, ignoreCase = true)) {
+                result.add(uri)
+                continue
+            }
+            val displayName = resolveDisplayName(uri)
+            val safeName = displayName
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                .takeLast(90)
+                .ifBlank { "upload_${System.currentTimeMillis()}.mp4" }
+            val destFile = File(stageDir, "${System.currentTimeMillis()}_$safeName")
+
+            val copied = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                        }
+                        output.flush()
+                    }
+                    destFile.exists() && destFile.length() > 0L
+                } ?: false
+            }.getOrElse { err ->
+                Log.e(TAG, "Failed to stage content URI for Studio upload: $uri", err)
+                false
+            }
+
+            if (copied) {
+                result.add(Uri.fromFile(destFile))
+            } else {
+                // Last-resort fallback to original URI if stream copy failed
+                runCatching { destFile.delete() }
+                result.add(uri)
+            }
+        }
+        return result.toTypedArray()
+    }
+
+    private fun resolveDisplayName(uri: Uri): String {
+        runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) {
+                            val name = cursor.getString(idx)
+                            if (!name.isNullOrBlank()) return name
+                        }
+                    }
+                }
+        }
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        val ext = mime?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            ?.takeIf { it.isNotBlank() } ?: "mp4"
+        return "studio_upload_${System.currentTimeMillis()}.$ext"
+    }
+
+    private fun cleanupOldStagedUploads() {
+        ioExecutor.execute {
+            runCatching {
+                val stageDir = File(context.cacheDir, "studio_uploads")
+                if (!stageDir.exists()) return@runCatching
+                val cutoff = System.currentTimeMillis() - 12L * 60L * 60L * 1000L
+                stageDir.listFiles()?.forEach { file ->
+                    if (file.lastModified() < cutoff) {
+                        file.delete()
+                    }
+                }
+            }
+        }
     }
 
     fun clearAllSessionCookies() {
@@ -1160,16 +1681,32 @@ class GeckoEngineManager(private val context: Context) {
                 request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny> {
                 val uri = request.uri
+                val isNewWindowTarget = request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW
+
+                // Let extension/auth popups targeting a new window pass through to onNewSession()
+                // so GeckoView preserves window.opener and postMessage!
+                if (isNewWindowTarget && (isExtensionTrustedUrl(uri) || uri == "about:blank" || (isStudio && isStudioOrAuthHost(uri)))) {
+                    return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+                }
+
+                // Allow embedded moz-extension:// resources (e.g., vidIQ / SponsorBlock frames)
+                if (uri.startsWith("moz-extension://", ignoreCase = true)) {
+                    return if (request.hasUserGesture && !isNewWindowTarget) {
+                        openExtensionPopupUrl(uri, resolveExtensionPopupTitle(uri))
+                        GeckoResult.fromValue(AllowOrDeny.DENY)
+                    } else {
+                        GeckoResult.fromValue(AllowOrDeny.ALLOW)
+                    }
+                }
 
                 if (isExtensionTrustedUrl(uri)) {
-                    // Open extension login/signup/settings pages (e.g. vidIQ) inside the synced in-app auth modal
-                    _events.tryEmit(
-                        GeckoEvent.OpenAuthPopup(
-                            url = uri,
-                            title = resolveExtensionPopupTitle(uri)
-                        )
-                    )
-                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                    // User tapped an extension sign-in/signup link (e.g., vidIQ Log in / Sign up)
+                    if (request.hasUserGesture || request.isDirectNavigation) {
+                        openExtensionPopupUrl(uri, resolveExtensionPopupTitle(uri))
+                        return GeckoResult.fromValue(AllowOrDeny.DENY)
+                    }
+                    // Embedded extension iframe/API frame inside Studio: allow cleanly
+                    return GeckoResult.fromValue(AllowOrDeny.ALLOW)
                 }
 
                 if (!isAllowedHost(uri)) {
@@ -1178,14 +1715,21 @@ class GeckoEngineManager(private val context: Context) {
                 }
 
                 if (isStudio) {
-                    // Hardcoded PC/Desktop Studio: ANY YouTube video/watch/shorts/channel link
-                    // redirects automatically to the Mobile View YouTube Stream tab!
+                    // Hardcoded PC/Desktop Studio: user-clicked YouTube watch/shorts/channel links
+                    // redirect automatically to the Mobile View YouTube Stream tab (keep embedded iframes intact!)
                     if (isYouTubeWatchOrChannelUrl(uri)) {
-                        val mobileUrl = toMobileYouTubeUrl(uri)
-                        _events.tryEmit(GeckoEvent.OpenVideoInMobileStream(mobileUrl))
-                        return GeckoResult.fromValue(AllowOrDeny.DENY)
+                        val parsedPath = runCatching { Uri.parse(uri).path?.lowercase().orEmpty() }.getOrDefault("")
+                        if (parsedPath.startsWith("/embed/") || parsedPath.startsWith("/upload")) {
+                            return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+                        }
+                        if (request.hasUserGesture || request.isDirectNavigation) {
+                            val mobileUrl = toMobileYouTubeUrl(uri)
+                            _events.tryEmit(GeckoEvent.OpenVideoInMobileStream(mobileUrl))
+                            return GeckoResult.fromValue(AllowOrDeny.DENY)
+                        }
+                        return GeckoResult.fromValue(AllowOrDeny.ALLOW)
                     }
-                    // Keep Studio session strictly on studio.youtube.com & Google auth/assets
+                    // Keep Studio session strictly on studio.youtube.com & Google auth/upload infra
                     if (!isStudioOrAuthHost(uri)) {
                         _events.tryEmit(GeckoEvent.OpenVideoInMobileStream(toMobileYouTubeUrl(uri)))
                         return GeckoResult.fromValue(AllowOrDeny.DENY)
@@ -1205,20 +1749,21 @@ class GeckoEngineManager(private val context: Context) {
                 session: GeckoSession,
                 uri: String
             ): GeckoResult<GeckoSession> {
-                if (isExtensionTrustedUrl(uri)) {
-                    _events.tryEmit(
-                        GeckoEvent.OpenAuthPopup(
-                            url = uri,
-                            title = resolveExtensionPopupTitle(uri)
-                        )
+                val rt = runtime
+                if (rt != null && (uri.isBlank() || uri == "about:blank" || isExtensionTrustedUrl(uri) || (isStudio && isStudioOrAuthHost(uri)))) {
+                    val popup = openSyncedPopupSession(
+                        rt = rt,
+                        initialUrl = uri,
+                        title = resolveExtensionPopupTitle(uri),
+                        isGoogleFlow = false,
+                        autoLoadInitialUrl = false,
+                        sourceExtension = null
                     )
-                    return GeckoResult.fromValue(null)
+                    return GeckoResult.fromValue(popup)
                 }
                 if (isStudio) {
                     if (isYouTubeWatchOrChannelUrl(uri)) {
                         _events.tryEmit(GeckoEvent.OpenVideoInMobileStream(toMobileYouTubeUrl(uri)))
-                    } else if (isStudioOrAuthHost(uri)) {
-                        session.loadUri(uri)
                     } else if (!isAllowedHost(uri)) {
                         _events.tryEmit(GeckoEvent.BlockedExternalNavigation(uri))
                     } else {
@@ -1302,6 +1847,10 @@ class GeckoEngineManager(private val context: Context) {
             }
         }
 
+        attachFilePromptDelegate(session)
+    }
+
+    private fun attachFilePromptDelegate(session: GeckoSession) {
         session.promptDelegate = object : GeckoSession.PromptDelegate {
             override fun onFilePrompt(
                 session: GeckoSession,
@@ -1316,15 +1865,15 @@ class GeckoEngineManager(private val context: Context) {
                 val allowMultiple = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
                 isAwaitingFilePicker = true
 
-                pendingFileCallback = { uris ->
+                pendingFileCallback = { stagedUris ->
                     isAwaitingFilePicker = false
                     runCatching {
-                        if (uris.isNullOrEmpty()) {
+                        if (stagedUris.isNullOrEmpty()) {
                             result.complete(prompt.dismiss())
                         } else if (allowMultiple) {
-                            result.complete(prompt.confirm(context, uris))
+                            result.complete(prompt.confirm(context, stagedUris))
                         } else {
-                            result.complete(prompt.confirm(context, uris.first()))
+                            result.complete(prompt.confirm(context, stagedUris.first()))
                         }
                     }.onFailure { err ->
                         Log.e(TAG, "FilePrompt confirm failed", err)
@@ -1385,12 +1934,14 @@ class GeckoEngineManager(private val context: Context) {
         }
     }
 
-    private fun resolveExtensionPopupTitle(rawUrl: String): String {
+    private fun resolveExtensionPopupTitle(rawUrl: String, fallbackName: String = ""): String {
         val lower = rawUrl.lowercase()
         return when {
             lower.contains("vidiq") || lower.contains("vid.io") -> "vidIQ Account (Synced Session)"
             lower.contains("sponsor") || lower.contains("dearrow") -> "SponsorBlock / DeArrow"
-            lower.contains("moz-extension://") -> "Extension Settings"
+            lower.contains("accounts.google.com") -> "Google Sign-In (Synced Session)"
+            lower.contains("moz-extension://") -> fallbackName.ifBlank { "Extension Settings" }
+            fallbackName.isNotBlank() -> fallbackName
             else -> "Extension Sign-In (Synced Session)"
         }
     }
@@ -1411,7 +1962,7 @@ class GeckoEngineManager(private val context: Context) {
     }
 
     private fun isStudioOrAuthHost(rawUrl: String): Boolean {
-        if (rawUrl.startsWith("about:") || rawUrl.startsWith("blob:") || rawUrl.startsWith("data:")) {
+        if (rawUrl.startsWith("about:") || rawUrl.startsWith("blob:") || rawUrl.startsWith("data:") || rawUrl.startsWith("moz-extension://")) {
             return true
         }
         val host = runCatching { Uri.parse(rawUrl).host?.lowercase() }.getOrNull() ?: return false
@@ -1423,14 +1974,16 @@ class GeckoEngineManager(private val context: Context) {
     private fun isYouTubeWatchOrChannelUrl(rawUrl: String): Boolean {
         val parsed = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return false
         val host = parsed.host?.lowercase() ?: return false
-        if (host == "studio.youtube.com" || host == "accounts.youtube.com" || host == "consent.youtube.com") {
+        if (host == "studio.youtube.com" || host == "accounts.youtube.com" || host == "consent.youtube.com" || host == "upload.youtube.com") {
             return false
         }
         if (host == "youtu.be") return true
         if (host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" || host == "music.youtube.com") {
             val path = parsed.path?.lowercase().orEmpty()
-            // Never intercept internal sign-in or redirect helper endpoints
-            if (path.startsWith("/signin") || path.startsWith("/account") || path.startsWith("/logout")) {
+            // Never intercept internal sign-in, upload, embed, or redirect helper endpoints
+            if (path.startsWith("/signin") || path.startsWith("/account") || path.startsWith("/logout") ||
+                path.startsWith("/upload") || path.startsWith("/embed/")
+            ) {
                 return false
             }
             return true

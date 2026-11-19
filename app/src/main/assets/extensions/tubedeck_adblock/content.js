@@ -472,109 +472,21 @@
     }
   }
 
-  // Built-in YTube Studio Creator Enhancer (Desktop Studio SEO char badges + HD Thumbnail & Tag Copy)
-  function extractCurrentVideoId() {
+  // Built-in Shadow-DOM helper for Studio quick-upload fallback
+  function queryStudioDeep(selector, root = document) {
+    if (!root) return null;
     try {
-      const url = new URL(location.href);
-      const v = url.searchParams.get("v");
-      if (v && v.length === 11) return v;
-      const m = location.pathname.match(/\/(?:shorts|video|embed|live)\/([A-Za-z0-9_-]{11})/);
-      if (m && m[1]) return m[1];
+      const direct = root.querySelector(selector);
+      if (direct) return direct;
     } catch (_) {}
-    return null;
-  }
-
-  function refreshStudioCreatorBar() {
-    if (location.hostname !== "studio.youtube.com") return;
-    const vid = extractCurrentVideoId();
-    const existing = document.getElementById("ytstudio-creator-tools-bar");
-    if (!vid) {
-      if (existing) existing.remove();
-      return;
-    }
-
-    // Live Title & Description SEO character count badge on Studio Video Edit page
-    const titleBox = document.querySelector("#title-textarea #textbox, [aria-label*='Add a title' i]");
-    const descBox = document.querySelector("#description-textarea #textbox, [aria-label*='Tell viewers' i]");
-    const titleLen = titleBox ? (titleBox.textContent || "").trim().length : -1;
-    const descLen = descBox ? (descBox.textContent || "").trim().length : -1;
-
-    if (!existing && document.body) {
-      const bar = document.createElement("div");
-      bar.id = "ytstudio-creator-tools-bar";
-      bar.style.cssText = [
-        "position:fixed",
-        "bottom:14px",
-        "right:14px",
-        "z-index:2147483640",
-        "display:flex",
-        "align-items:center",
-        "gap:6px",
-        "padding:6px 10px",
-        "border-radius:12px",
-        "background:rgba(13,15,20,0.92)",
-        "border:1px solid rgba(255,255,255,0.16)",
-        "color:#F5F7FA",
-        "font:600 11px/1.2 system-ui,-apple-system,sans-serif",
-        "box-shadow:0 4px 16px rgba(0,0,0,0.45)",
-        "backdrop-filter:blur(8px)"
-      ].join(";");
-
-      const seoSpan = document.createElement("span");
-      seoSpan.id = "ytstudio-seo-counter";
-      seoSpan.style.color = "#00E676";
-
-      const thumbBtn = document.createElement("button");
-      thumbBtn.textContent = "HD Thumb";
-      thumbBtn.style.cssText = "background:#E50914;color:#fff;border:none;border-radius:7px;padding:4px 8px;font-weight:700;font-size:11px;cursor:pointer;";
-      thumbBtn.onclick = () => {
-        const curVid = extractCurrentVideoId();
-        if (!curVid) return;
-        const a = document.createElement("a");
-        a.href = `https://i.ytimg.com/vi/${curVid}/maxresdefault.jpg`;
-        a.target = "_blank";
-        a.download = `${curVid}_thumbnail.jpg`;
-        a.click();
-      };
-
-      const tagsBtn = document.createElement("button");
-      tagsBtn.textContent = "Copy Tags";
-      tagsBtn.style.cssText = "background:#1E2430;color:#00E5FF;border:1px solid rgba(0,229,255,0.35);border-radius:7px;padding:4px 8px;font-weight:700;font-size:11px;cursor:pointer;";
-      tagsBtn.onclick = () => {
-        const chips = Array.from(document.querySelectorAll("ytcp-chip-bar ytcp-chip #chip-text, #tags-container ytcp-chip #chip-text"))
-          .map((el) => (el.textContent || "").trim())
-          .filter(Boolean);
-        const text = chips.join(", ");
-        if (text && navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(() => {
-            tagsBtn.textContent = `Copied (${chips.length})`;
-            setTimeout(() => { tagsBtn.textContent = "Copy Tags"; }, 1800);
-          }).catch(() => {});
-        } else {
-          tagsBtn.textContent = "No Tags Found";
-          setTimeout(() => { tagsBtn.textContent = "Copy Tags"; }, 1600);
-        }
-      };
-
-      bar.appendChild(seoSpan);
-      bar.appendChild(thumbBtn);
-      bar.appendChild(tagsBtn);
-      document.body.appendChild(bar);
-    }
-
-    const counterEl = document.getElementById("ytstudio-seo-counter");
-    if (counterEl) {
-      if (titleLen >= 0) {
-        const tColor = titleLen >= 40 && titleLen <= 70 ? "#00E676" : (titleLen > 95 ? "#FF5252" : "#FFB300");
-        counterEl.style.color = tColor;
-        counterEl.textContent = descLen >= 0
-          ? `Title ${titleLen}/100 • Desc ${descLen}/5000`
-          : `Title ${titleLen}/100`;
-      } else {
-        counterEl.style.color = "#00E5FF";
-        counterEl.textContent = "YTube Studio Tools";
+    const nodes = root.querySelectorAll ? root.querySelectorAll("*") : [];
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i] && nodes[i].shadowRoot) {
+        const hit = queryStudioDeep(selector, nodes[i].shadowRoot);
+        if (hit) return hit;
       }
     }
+    return null;
   }
 
   function applyAllConfig(forceQualityRefresh = false) {
@@ -584,7 +496,6 @@
     syncCompanionAdShieldCss();
     sweepActiveVideoAdIfAny();
     resetStudioZoom();
-    refreshStudioCreatorBar();
     applyQuality(config.preferredQuality, forceQualityRefresh);
   }
 
@@ -623,7 +534,12 @@
     } else if (msg.type === "queryQuality") {
       reportQualityState(findRawPlayer(), LABEL_TO_CODE[(config.preferredQuality || "auto").toLowerCase()], true);
     } else if (msg.type === "triggerStudioUpload") {
-      openStudioUploadModalFromDom();
+      const selectFiles = queryStudioDeep("#select-files-button, ytcp-button#select-files-button");
+      if (selectFiles && selectFiles.offsetParent !== null) {
+        selectFiles.click();
+      } else {
+        openStudioUploadModalFromDom();
+      }
     } else if (msg.type === "settings") {
       config = { ...config, ...msg };
       applyAllConfig(false);
@@ -647,7 +563,7 @@
       lastReportedSignature = "";
     }
     if (location.hostname === "studio.youtube.com") {
-      refreshStudioCreatorBar();
+      resetStudioZoom();
       return;
     }
     syncCompanionAdShieldCss();

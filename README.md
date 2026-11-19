@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.3-E50914?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.0.4-E50914?style=flat-square" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%2010%2B%20(arm64)-00E676?style=flat-square" />
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-00E5FF?style=flat-square" />
   <img alt="Author" src="https://img.shields.io/badge/author-Tamal%20Mitra-FFB300?style=flat-square" />
@@ -15,25 +15,25 @@
 
 ## Overview
 
-**YTube Studio** (`com.tamalmitra.ytubestudio`) is an open-source, privacy-focused Android client built with **Kotlin**, **Jetpack Compose**, and **Mozilla GeckoView**. It unifies ad-free YouTube streaming, full desktop YouTube Studio creator controls, a built-in `yt-dlp` + `FFmpeg` offline download manager, a dedicated Media3 offline audio/video player, dynamic DNS-over-HTTPS (DoH) failover, and automatic GitHub extension updates in a single Material 3 app.
+**YTube Studio** (`com.tamalmitra.ytubestudio`) is an open-source, privacy-focused Android client built with **Kotlin**, **Jetpack Compose**, and **Mozilla GeckoView**. It unifies ad-free YouTube streaming, full desktop YouTube Studio creator controls, a custom built-in **YTube Studio Pro** extension, a `yt-dlp` + `FFmpeg` offline download manager, a dedicated Media3 offline audio/video player, dynamic DNS-over-HTTPS (DoH) failover, and automatic extension updates in a single Material 3 app.
 
 ---
 
 ## Key Features
 
 - **Full Mozilla Extensions Hub (7 Official Signed Extensions + Auto-Updates)**
-  - Runs official Mozilla-signed WebExtensions natively inside GeckoView: **uBlock Origin**, **SponsorBlock**, **Return YouTube Dislike**, **DeArrow**, **YouTube NonStop**, **Enhancer for YouTube**, and **vidIQ Vision for Studio**.
+  - Runs official Mozilla-signed WebExtensions natively inside GeckoView with full `WebExtension.TabDelegate` & OAuth popup support: **uBlock Origin**, **SponsorBlock**, **Return YouTube Dislike**, **DeArrow**, **YouTube NonStop**, **Enhancer for YouTube**, and **vidIQ Vision for Studio**.
   - Individual ON/OFF toggles, live version indicators, one-tap **Update All**, and automatic background 24-hour updates from **Mozilla Add-ons (AMO v5)**, **`gorhill/uBlock` GitHub Releases**, and **`yt-dlp` Nightly** so every extension and download engine stays fresh automatically.
 - **Fast Cold-Start & Post-Login Performance**
   - Lazy-loads Desktop Studio only when you open the Studio tab, cutting startup load time and RAM usage in half.
-  - Balanced GeckoView content-blocking cookie isolation eliminates post-login cookie stalls and login redirect loops.
+  - Balanced GeckoView content-blocking (`ACCEPT_NON_TRACKERS`) shares cookies cleanly across YouTube, Studio uploads, and extension login popups.
   - Inactive tabs suspend rendering automatically while preserving background audio when enabled.
 - **Full Landscape Video & Real Resolution Control**
   - Automatic `SENSOR_LANDSCAPE` immersive fullscreen mode with edge-to-edge system bar hiding and Back-key exit.
   - Live YouTube player quality inspection and switching (`Auto`, `2160p`, `1440p`, `1080p`, `720p`, `480p`, `360p`, `240p`, `144p`) with actual resolved playback height feedback.
-- **Desktop YouTube Studio + Built-In Creator Toolkit**
-  - Dedicated desktop Firefox User-Agent session locked to `studio.youtube.com` with quick section shortcuts (Dashboard, Upload, Content, Analytics, Comments, Subtitles, Earn), zoom controls (`50%–130%`), native SAF file picker for uploads, and keep-screen-awake support.
-  - Built-in Studio Creator Toolkit floating bar with live SEO Title/Description character counters, 1-tap HD Thumbnail opener, and 1-tap Tag Copier — paired with **vidIQ Vision**.
+- **Desktop YouTube Studio + Custom Built-In "YTube Studio Pro" Extension**
+  - Dedicated desktop Firefox User-Agent session locked to `studio.youtube.com` with quick section shortcuts (Dashboard, Upload, Content, Analytics, Comments, Subtitles, Earn), cache-staged SAF file uploads (Android 10–16 compatible), and keep-screen-awake support.
+  - Custom built-in **YTube Studio Pro** extension (`PRO` button in Studio header): auto-collapse sidebar, Focus Dashboard (hide promo clutter), Privacy Blur (hide views/subscribers/revenue), live `0–100` SEO Audit HUD, Smart Tag Generator, Copy All Tags, HD Thumbnail grabber, and one-tap Description Templates (Tutorial, Gaming, Shorts, Vlog + Custom Saved Template).
 - **Built-In Download Manager & Offline Media Player**
   - Hooks directly into YouTube's built-in Download button so tapping Download inside any video launches YTube Studio's format picker (`MP3 320kbps`, `M4A`, `MP4 1080p/720p/480p/360p`).
   - Powered by `youtubedl-android` (`yt-dlp` Nightly + `FFmpeg`) with multi-client fallback extraction and MediaStore integration (`Music/YTubeStudio` and `Movies/YTubeStudio`).

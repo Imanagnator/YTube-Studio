@@ -4,6 +4,24 @@ All notable changes to **YTube Studio** by **Tamal Mitra** are documented in thi
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-04-12
+
+### Added
+- **Custom Built-In Extension: YTube Studio Pro (`ytube-studio-pro@tamalmitra.app`)**
+  - Dedicated built-in GeckoView WebExtension + native Material 3 **Studio Pro** bottom sheet (`PRO` button in Studio top bar) requiring zero login or external APIs.
+  - **Mobile-Friendly PC Studio Engine**: Auto-collapses Studio's left sidebar to reclaim ~250px on phone screens, optional **Focus Dashboard** (hides Creator Insider / News / Ideas clutter cards), and **Privacy Blur** mode (blurs views, subscribers & revenue for safe screenshots/recordings).
+  - **Live Video SEO Audit HUD**: Real-time `0–100` SEO score with Title/Description/Tags/Chapters/Hashtags breakdown and collapsible HUD pill on Video Details pages.
+  - **One-Tap Creator Tools**: Smart Tags generator from your video title, Copy All Tags, HD Thumbnail opener, Shadow-DOM smart Upload trigger, and 4 built-in Description Templates (Tutorial, Gaming, Shorts, Vlog) plus a persistent **Custom Saved Template**.
+
+### Fixed
+- **Extension Authentication & OAuth Popups (vidIQ Vision & All Installed Extensions)**
+  - Registered `WebExtension.TabDelegate` (`onNewTab` + `onOpenOptionsPage`) and `WebExtension.SessionTabDelegate` (`onCloseTab` + `onUpdateTab`) on every installed extension so `browser.tabs.create()` (used by vidIQ's Log in / Sign up buttons) opens natively inside our synced in-app popup modal.
+  - Implemented a real nested `GeckoSession` popup stack in `NavigationDelegate.onNewSession` preserving `window.opener`, `postMessage`, `about:blank` OAuth flows (e.g., vidIQ → Continue with Google), and automatic `window.close()` handling.
+  - Switched GeckoView cookie behavior to `ACCEPT_NON_TRACKERS` so extension auth cookies (`vidiq.com`) and YouTube upload endpoints share session cookies cleanly with `studio.youtube.com` without Total Cookie Protection partitioning.
+- **YouTube Studio Video / Thumbnail / Subtitle Uploads on Android 11–16**
+  - Added a background cache-staging pipeline (`studio_uploads/`) that streams picked SAF `content://` files via a 64KB buffer (preserving exact filenames & extensions) and passes native `file://` URIs to GeckoView's `FilePrompt.confirm()`, bypassing Android Scoped Storage `IntentUtils` failures.
+  - Added `upload.video.google.com`, `clients6.google.com`, `www.google.com`, and `/embed/` + `/upload` paths to Studio's allowed hosts and eliminated the page-reload race condition when tapping the red **Upload** shortcut.
+
 ## [1.0.3] - 2026-04-12
 
 ### Fixed

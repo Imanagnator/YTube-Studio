@@ -31,6 +31,7 @@ import com.example.data.model.QualityOption
 import com.example.data.model.RecordingState
 import com.example.data.model.StudioShortcut
 import com.example.data.model.VideoProbeUiState
+import com.example.gecko.ActivePopupState
 import com.example.gecko.BrowserTabState
 import com.example.gecko.GeckoEngineManager
 import com.example.gecko.GeckoEvent
@@ -38,6 +39,7 @@ import com.example.gecko.LiveQualityState
 import com.example.gecko.ManagedExtensionSpec
 import com.example.gecko.ManagedExtensionState
 import com.example.gecko.ManagedExtensionsCatalog
+import com.example.gecko.StudioProMetrics
 import com.example.gecko.UBlockOriginUpdater
 import com.example.gecko.UBlockStatus
 import com.example.network.DnsAndSpeedEngine
@@ -87,6 +89,8 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
     val managedExtensions: StateFlow<List<ManagedExtensionState>> = geckoEngine.managedExtensions
     val isFullScreen: StateFlow<Boolean> = geckoEngine.isFullScreen
     val liveQualityState: StateFlow<LiveQualityState> = geckoEngine.liveQualityState
+    val activePopup: StateFlow<ActivePopupState?> = geckoEngine.activePopup
+    val studioProMetrics: StateFlow<StudioProMetrics> = geckoEngine.studioProMetrics
     val streamState: StateFlow<BrowserTabState> = geckoEngine.streamState
     val studioState: StateFlow<BrowserTabState> = geckoEngine.studioState
     val isLoggedInLikely: StateFlow<Boolean> = geckoEngine.isLoggedInLikely
@@ -141,14 +145,8 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
     private val _activePlayback = MutableStateFlow(ActivePlaybackState())
     val activePlayback: StateFlow<ActivePlaybackState> = _activePlayback.asStateFlow()
 
-    private val _showAuthDialog = MutableStateFlow(false)
-    val showAuthDialog: StateFlow<Boolean> = _showAuthDialog.asStateFlow()
-
-    private val _authDialogUrl = MutableStateFlow(GeckoEngineManager.GOOGLE_LOGIN_URL)
-    val authDialogUrl: StateFlow<String> = _authDialogUrl.asStateFlow()
-
-    private val _authDialogTitle = MutableStateFlow("Google Sign-In (Synced Session)")
-    val authDialogTitle: StateFlow<String> = _authDialogTitle.asStateFlow()
+    private val _showStudioProSheet = MutableStateFlow(false)
+    val showStudioProSheet: StateFlow<Boolean> = _showStudioProSheet.asStateFlow()
 
     private val _showNotificationsSheet = MutableStateFlow(false)
     val showNotificationsSheet: StateFlow<Boolean> = _showNotificationsSheet.asStateFlow()
@@ -277,6 +275,14 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                 preferredQuality = prefs.preferredQuality,
                 studioZoomPercent = prefs.studioDesktopZoomPercent
             )
+            geckoEngine.updateStudioProConfig(
+                enabled = prefs.studioProEnabled,
+                autoCollapseSidebar = prefs.studioProAutoCollapseSidebar,
+                focusMode = prefs.studioProFocusMode,
+                seoHudEnabled = prefs.studioProSeoHudEnabled,
+                privacyBlur = prefs.studioProPrivacyBlur,
+                customTemplate = prefs.studioProCustomTemplate
+            )
         }
     }
 
@@ -307,8 +313,7 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                         probeVideoUrl(event.url, event.cookiesTxt.ifBlank { geckoEngine.latestCookiesTxt })
                     }
                     is GeckoEvent.LoginCompleted -> {
-                        _showAuthDialog.value = false
-                        geckoEngine.closeAuthSession()
+                        geckoEngine.closeAllPopupSessions(reloadStudioIfExtension = false)
                         geckoEngine.streamSession.reload()
                         if (geckoEngine.studioSession.isOpen) {
                             geckoEngine.studioSession.reload()
@@ -321,9 +326,10 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                         )
                     }
                     is GeckoEvent.OpenAuthPopup -> {
-                        _authDialogUrl.value = event.url
-                        _authDialogTitle.value = event.title
-                        _showAuthDialog.value = true
+                        geckoEngine.openExtensionPopupUrl(event.url, event.title)
+                    }
+                    is GeckoEvent.StudioProToast -> {
+                        _snackbarEvents.tryEmit(event.message)
                     }
                     is GeckoEvent.FileUploadRequested -> {
                         _filePickerEvents.tryEmit(event)
@@ -689,13 +695,16 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
             ?.getOrNull(1)
 
         if (shortcut.id == "upload") {
-            if (!channelId.isNullOrBlank()) {
-                geckoEngine.loadStudioUrl("https://studio.youtube.com/channel/$channelId/videos/upload?d=ud")
-            } else if (!current.contains("studio.youtube.com", ignoreCase = true)) {
+            if (current.contains("studio.youtube.com", ignoreCase = true)) {
+                // Trigger Studio's upload dialog directly WITHOUT reloading the page!
+                geckoEngine.triggerStudioUploadDialog()
+            } else {
                 geckoEngine.loadStudioUrl(GeckoEngineManager.HOME_STUDIO_URL)
+                viewModelScope.launch {
+                    delay(2_200L)
+                    geckoEngine.triggerStudioUploadDialog()
+                }
             }
-            // Also trigger Studio's native Create -> Upload dialog directly from the page DOM
-            geckoEngine.triggerStudioUploadDialog()
             return
         }
 
@@ -785,19 +794,105 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openInAppGoogleLogin() {
-        _authDialogUrl.value = GeckoEngineManager.GOOGLE_LOGIN_URL
-        _authDialogTitle.value = "Google Sign-In (Synced Session)"
-        _showAuthDialog.value = true
+        geckoEngine.openGoogleSignInPopup()
     }
 
-    fun closeInAppGoogleLogin() {
-        val wasExtensionPopup = !_authDialogUrl.value.contains("accounts.google.com", ignoreCase = true)
-        _showAuthDialog.value = false
-        geckoEngine.closeAuthSession()
-        if (wasExtensionPopup && geckoEngine.studioSession.isOpen) {
-            geckoEngine.studioSession.reload()
-            _snackbarEvents.tryEmit("Synced extension account with YT Studio")
+    fun navigatePopupBack() {
+        val top = activePopup.value ?: return
+        if (top.canGoBack) {
+            top.session.goBack()
+        } else {
+            geckoEngine.closeTopPopupSession()
         }
+    }
+
+    fun closeTopPopup() {
+        geckoEngine.closeTopPopupSession()
+    }
+
+    fun doneSyncPopup() {
+        val hadExtensionPopup = activePopup.value?.isGoogleFlow == false
+        geckoEngine.closeAllPopupSessions(reloadStudioIfExtension = true)
+        if (hadExtensionPopup) {
+            _snackbarEvents.tryEmit("Synced extension account with YT Studio")
+        } else {
+            geckoEngine.requestCookiesRefresh()
+        }
+    }
+
+    fun openStudioProSheet() {
+        geckoEngine.sendStudioProAction("refreshMetrics")
+        _showStudioProSheet.value = true
+    }
+
+    fun closeStudioProSheet() {
+        _showStudioProSheet.value = false
+    }
+
+    private fun pushStudioProPrefs(
+        enabled: Boolean = userPrefs.value.studioProEnabled,
+        autoCollapse: Boolean = userPrefs.value.studioProAutoCollapseSidebar,
+        focusMode: Boolean = userPrefs.value.studioProFocusMode,
+        seoHud: Boolean = userPrefs.value.studioProSeoHudEnabled,
+        privacyBlur: Boolean = userPrefs.value.studioProPrivacyBlur,
+        customTemplate: String = userPrefs.value.studioProCustomTemplate
+    ) {
+        geckoEngine.updateStudioProConfig(
+            enabled = enabled,
+            autoCollapseSidebar = autoCollapse,
+            focusMode = focusMode,
+            seoHudEnabled = seoHud,
+            privacyBlur = privacyBlur,
+            customTemplate = customTemplate
+        )
+    }
+
+    fun toggleStudioProEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProEnabled(enabled)
+            pushStudioProPrefs(enabled = enabled)
+            _snackbarEvents.tryEmit(if (enabled) "YTube Studio Pro enabled" else "YTube Studio Pro paused")
+        }
+    }
+
+    fun toggleStudioProAutoCollapse(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProAutoCollapseSidebar(enabled)
+            pushStudioProPrefs(autoCollapse = enabled)
+        }
+    }
+
+    fun toggleStudioProFocusMode(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProFocusMode(enabled)
+            pushStudioProPrefs(focusMode = enabled)
+        }
+    }
+
+    fun toggleStudioProSeoHud(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProSeoHudEnabled(enabled)
+            pushStudioProPrefs(seoHud = enabled)
+        }
+    }
+
+    fun toggleStudioProPrivacyBlur(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProPrivacyBlur(enabled)
+            pushStudioProPrefs(privacyBlur = enabled)
+        }
+    }
+
+    fun saveStudioProCustomTemplate(template: String) {
+        viewModelScope.launch {
+            prefsRepo.setStudioProCustomTemplate(template)
+            pushStudioProPrefs(customTemplate = template)
+            _snackbarEvents.tryEmit("Saved custom description template")
+        }
+    }
+
+    fun triggerStudioProAction(action: String, payload: String = "") {
+        geckoEngine.sendStudioProAction(action, payload)
     }
 
     fun toggleAutoUpdateExtensions(enabled: Boolean) {

@@ -11,7 +11,7 @@
 - **Package / Application ID**: `com.tamalmitra.ytubestudio`
 - **Android Namespace**: `com.example` *(DO NOT rename `com/example/` package directories or `namespace`)*
 - **License**: GNU GPL v3.0
-- **Current Version**: `1.0.3` (`versionCode = 4`)
+- **Current Version**: `1.0.4` (`versionCode = 5`)
 - **Permanent Release Signing**: Configured in GitHub Repository Secrets (`RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`) — all builds from `v1.0.2` onward update seamlessly in-place.
 - **Workflow Preference**: Whenever a new version is built & verified, push `main` → wait **20–30 seconds cooldown** → push the version tag (`vX.Y.Z`) to GitHub automatically so GitHub Actions builds and publishes the signed Release APK.
 
@@ -21,16 +21,18 @@
 1. **Feature Preservation**: Never remove, hide, or regress any feature listed in `FEATURE_LOCK.json` without explicit approval from Tamal Mitra.
 2. **GeckoView WebExtensions & uBlock Origin Stability (CRITICAL)**:
    - `GeckoRuntimeSettings.Builder()` MUST keep `.extensionsProcessEnabled(true)` and `.extensionsWebAPIEnabled(true)`.
-   - `configureWebExtensionController` MUST keep `ExtensionProcessDelegate` (`enableExtensionProcessSpawning()`), and `webExtensionController.setTabActive(...)` MUST stay wired on Stream/Studio open and tab switches.
+   - `configureWebExtensionController` MUST keep `ExtensionProcessDelegate` (`enableExtensionProcessSpawning()`), `attachExtensionTabDelegate(...)` (`WebExtension.TabDelegate` for `browser.tabs.create()` + `onOpenOptionsPage`), real nested `GeckoSession` popup stack (`onNewSession` preserving `window.opener`), and `webExtensionController.setTabActive(...)`.
+   - Studio uploads MUST stage picked SAF `content://` URIs into private `cacheDir/studio_uploads/` and pass `file://` URIs to `FilePrompt.confirm()` to bypass Android 11–16 Scoped Storage `IntentUtils` failures.
    - Extension installs MUST use Mozilla AMO direct HTTPS (`INSTALLATION_METHOD_MANAGER`) first with local XPI (`INSTALLATION_METHOD_FROM_FILE`) fallback, and `uBlock Origin` MUST prefer Mozilla AMO with `gorhill/uBlock` GitHub fallback.
    - `tubedeck_adblock/content.js` MUST keep the lightweight companion YouTube Ad-Shield failsafe alongside uBlock Origin.
+   - `ytube_studio_pro/` (`ytube-studio-pro@tamalmitra.app`) is the dedicated custom built-in YouTube Studio Pro WebExtension bridged to `StudioProBottomSheet`.
 3. **Release APK `yt-dlp` + `FFmpeg` Stability**:
    - `app/src/main/AndroidManifest.xml` MUST keep `android:extractNativeLibs="true"` on `<application>`.
    - `app/proguard-rules.pro` MUST keep `com.yausername.**`, `com.fasterxml.jackson.**` (+ annotations), `org.apache.commons.**`, `org.tukaani.**`, `com.example.data.model.**`, and `com.example.gecko.**`.
    - `MediaDownloadManager.kt` MUST keep the 4-stage multi-client extraction fallback (`android_vr,mweb,tv` → `cookies+mweb,tv,web_embedded` → `ios,android,web_embedded` → `default`), canonical URL normalization, `--no-playlist`, and self-healing `UpdateChannel._NIGHTLY` retry.
-3. **Cold-Start & Post-Login Speed**:
+4. **Cold-Start & Post-Login Speed**:
    - Desktop YouTube Studio session (`studioSession`) MUST remain lazy-loaded on demand (never booted on app cold start).
-   - GeckoView content blocking MUST remain balanced (`DEFAULT` + `ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS`) so Google login and YouTube cookies never stall.
+   - GeckoView content blocking MUST use `DEFAULT` + `ACCEPT_NON_TRACKERS` so extension auth cookies (e.g. `vidiq.com`) and YouTube upload endpoints share cookies seamlessly with `studio.youtube.com`.
    - Inactive browser tabs MUST suspend automatically while respecting Background Audio playback.
 4. **Signing & Secrets Hygiene**:
    - Never commit `.jks`, `.keystore`, `.env`, Personal Access Tokens, or `local.properties` to Git.
@@ -61,8 +63,8 @@
 - **`v1.0.0`** — YTube Studio rebrand (`com.tamalmitra.ytubestudio`), uBlock Origin auto-updater, cold-start/login speed optimization, Media3 offline player, YouTube native Download button hook, fullscreen landscape + quality switcher, Dynamic Auto-DNS failover, Screen Recorder, GitHub Actions CI.
 - **`v1.0.1`** — Full Mozilla Extensions Hub (7 official signed extensions), full 24h auto-updater for all extensions + `yt-dlp` nightly engine, built-in YTube Studio Creator Toolkit (SEO char counters, HD thumbnail opener, tag copier), Release APK `yt-dlp` R8 + `extractNativeLibs` + 4-stage multi-client fix, and permanent `.project_memory/` continuity database.
 - **`v1.0.2`** — Fixed uBlock Origin & Mozilla Extensions runtime in GeckoView 159 (`extensionsProcessEnabled`, `extensionsWebAPIEnabled`, `ExtensionProcessDelegate`, `setTabActive`, direct Mozilla AMO HTTPS install path, AMO primary for uBlock avoiding GitHub IP rate limits, first-boot reload, manual repair refresh, and companion YouTube Ad-Shield failsafe). First release signed with Tamal's permanent 27-year GitHub Secrets keystore.
-- **`v1.0.3`** — Fixed Studio video/thumbnail/subtitle uploads (MIME extension sanitization, `isAwaitingFilePicker` session guard, `upload.youtube.com`/`googleapis.com` allowlist, native Upload DOM trigger), enabled synced in-app login/signup popup for trusted extensions (vidIQ, SponsorBlock, etc.), and removed the non-working Studio `%` screen zoom button.
+- **`v1.0.3`** — Fixed Studio MIME extension sanitization, `isAwaitingFilePicker` session guard, and removed non-working Studio `%` screen zoom button.
+- **`v1.0.4`** — Fixed extension authentication (`WebExtension.TabDelegate` for `browser.tabs.create()` + real nested `GeckoSession` popup stack preserving `window.opener` + `ACCEPT_NON_TRACKERS` cookies), fixed Android 11–16 Studio uploads via cache-staged `file://` URI pipeline & race-free Upload trigger, and added custom built-in **YTube Studio Pro** extension (`ytube-studio-pro@tamalmitra.app`) + native `StudioProBottomSheet`.
 - **Upcoming Roadmap Ideas**:
-  - Permanent GitHub Release keystore secret (`RELEASE_KEYSTORE_BASE64`) so every GitHub Release updates cleanly in-place with zero signature conflicts.
   - Optional in-app GitHub Release self-updater banner notifying when a newer `vX.Y.Z` tag is published on `Imanagnator/YTube-Studio`.
   - Custom `yt-dlp` download quality presets & audio-only playlist queue support.

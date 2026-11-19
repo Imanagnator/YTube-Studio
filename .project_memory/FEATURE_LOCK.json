@@ -3,8 +3,8 @@
   "author": "Tamal Mitra",
   "repository": "https://github.com/Imanagnator/YTube-Studio",
   "application_id": "com.tamalmitra.ytubestudio",
-  "current_version": "1.0.3",
-  "version_code": 4,
+  "current_version": "1.0.4",
+  "version_code": 5,
   "policy": "Never remove or disable any locked feature without explicit approval from Tamal Mitra.",
   "locked_features": [
     {
@@ -41,8 +41,15 @@
       "can_remove_without_permission": false
     },
     {
-      "id": "studio_creator_toolkit",
-      "name": "Built-In YTube Studio Creator Toolkit (SEO Counters, HD Thumbnail, Tag Copier)",
+      "id": "ytube_studio_pro_extension",
+      "name": "Custom Built-In YTube Studio Pro Extension (SEO Audit HUD, Templates, Smart Tags, Sidebar Auto-Collapse, Focus Mode, Privacy Blur)",
+      "extension_id": "ytube-studio-pro@tamalmitra.app",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "extension_tab_delegate_and_cache_staged_uploads",
+      "name": "WebExtension.TabDelegate OAuth Popup Stack & Android 11-16 Cache-Staged Studio File Uploads",
       "status": "active",
       "can_remove_without_permission": false
     },

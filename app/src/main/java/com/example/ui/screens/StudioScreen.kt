@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Notifications
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.UserPrefs
 import com.example.data.model.StudioShortcut
 import com.example.gecko.BrowserTabState
+import com.example.gecko.StudioProMetrics
 import com.example.ui.components.GeckoSessionHost
 import com.example.ui.theme.CyanTelemetry
 import com.example.ui.theme.ElectricMint
@@ -53,12 +55,14 @@ fun StudioScreen(
     isFullScreen: Boolean,
     tabState: BrowserTabState,
     prefs: UserPrefs,
+    studioProMetrics: StudioProMetrics,
     shortcuts: List<StudioShortcut>,
     unreadNotifications: Int,
     onBack: () -> Unit,
     onReload: () -> Unit,
     onSelectShortcut: (StudioShortcut) -> Unit,
     onToggleKeepAwake: (Boolean) -> Unit,
+    onOpenStudioPro: () -> Unit,
     onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -130,6 +134,44 @@ fun StudioScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        // Custom Built-In YTube Studio Pro Extension Button
+                        val proActiveColor = if (prefs.studioProEnabled) ElectricMint else MaterialTheme.colorScheme.onSurfaceVariant
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (prefs.studioProEnabled) ElectricMint.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                if (prefs.studioProEnabled) ElectricMint.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline
+                            ),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .clickable(onClick = onOpenStudioPro)
+                                .testTag("studio_pro_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.AutoAwesome,
+                                    contentDescription = "YTube Studio Pro Tools",
+                                    tint = proActiveColor,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = if (studioProMetrics.seoScore >= 0 && prefs.studioProEnabled) {
+                                        "PRO ${studioProMetrics.seoScore}"
+                                    } else {
+                                        "PRO"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = proActiveColor,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
                         // Keep Screen Awake during long uploads
                         Surface(
                             shape = RoundedCornerShape(10.dp),

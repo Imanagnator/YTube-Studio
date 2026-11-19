@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -45,6 +46,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -55,6 +57,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,12 +77,12 @@ import com.example.data.local.AppNotificationEntity
 import com.example.data.local.NotificationCategory
 import com.example.data.model.DownloadFormatOption
 import com.example.data.model.VideoProbeUiState
+import com.example.gecko.ActivePopupState
 import com.example.gecko.GeckoEngineManager
 import com.example.ui.theme.CyanTelemetry
 import com.example.ui.theme.ElectricMint
 import com.example.ui.theme.SignalCrimson
 import com.example.ui.theme.StudioAmber
-import org.mozilla.geckoview.GeckoSession
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -465,20 +468,26 @@ fun NotificationsBottomSheet(
 
 @Composable
 fun InAppGoogleLoginDialog(
-    authSession: GeckoSession,
-    title: String = "Google Sign-In (Synced Session)",
-    targetUrl: String = GeckoEngineManager.GOOGLE_LOGIN_URL,
-    onDismiss: () -> Unit
+    popup: ActivePopupState,
+    onNavigateBack: () -> Unit,
+    onCloseTopPopup: () -> Unit,
+    onDoneSync: () -> Unit
 ) {
     val context = LocalContext.current
+    val hostPreview = remember(popup.currentUrl) {
+        runCatching { Uri.parse(popup.currentUrl).host }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: "Synced Extension & Account Session"
+    }
+
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = onCloseTopPopup,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.88f),
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.90f),
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -488,25 +497,46 @@ fun InAppGoogleLoginDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surfaceContainer)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(Icons.Filled.Lock, contentDescription = null, tint = ElectricMint, modifier = Modifier.size(18.dp))
-                        Column {
+                        if (popup.canGoBack || popup.depth > 1) {
+                            IconButton(
+                                onClick = {
+                                    if (popup.canGoBack) onNavigateBack() else onCloseTopPopup()
+                                }
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Popup Back",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                Icons.Filled.Lock,
+                                contentDescription = null,
+                                tint = ElectricMint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = title,
+                                text = popup.title.ifBlank { "Account Sign-In" },
                                 style = MaterialTheme.typography.titleSmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                "Shares login cookies with YouTube, Studio & extensions",
+                                text = hostPreview,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -515,12 +545,17 @@ fun InAppGoogleLoginDialog(
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = onDismiss) {
-                            Text("Done", color = ElectricMint)
+                        TextButton(
+                            onClick = onDoneSync,
+                            modifier = Modifier.testTag("auth_popup_done_btn")
+                        ) {
+                            Text("Done", color = ElectricMint, fontWeight = FontWeight.Bold)
                         }
                         IconButton(
                             onClick = {
-                                val launchUrl = targetUrl.ifBlank { GeckoEngineManager.GOOGLE_LOGIN_URL }
+                                val launchUrl = popup.currentUrl
+                                    .takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                                    ?: GeckoEngineManager.GOOGLE_LOGIN_URL
                                 runCatching {
                                     CustomTabsIntent.Builder().build()
                                         .launchUrl(context, Uri.parse(launchUrl))
@@ -539,19 +574,31 @@ fun InAppGoogleLoginDialog(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Filled.Close, contentDescription = "Close login")
+                        IconButton(onClick = onCloseTopPopup) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close login popup")
                         }
                     }
                 }
 
-                GeckoSessionHost(
-                    session = authSession,
-                    isEngineReady = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
+                if (popup.isLoading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = ElectricMint,
+                        trackColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                }
+
+                key(popup.id) {
+                    GeckoSessionHost(
+                        session = popup.session,
+                        isEngineReady = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                }
             }
         }
     }

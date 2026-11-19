@@ -33,7 +33,13 @@ data class UserPrefs(
     val darkThemeEnabled: Boolean = true,
     val ytDlpVersion: String = "Bundled 0.18.1",
     val uBlockVersion: String = UBlockOriginUpdater.BUNDLED_VERSION,
-    val disabledExtensionIds: Set<String> = emptySet()
+    val disabledExtensionIds: Set<String> = emptySet(),
+    val studioProEnabled: Boolean = true,
+    val studioProAutoCollapseSidebar: Boolean = true,
+    val studioProFocusMode: Boolean = false,
+    val studioProSeoHudEnabled: Boolean = true,
+    val studioProPrivacyBlur: Boolean = false,
+    val studioProCustomTemplate: String = ""
 )
 
 class UserPreferencesRepository(private val context: Context) {
@@ -57,6 +63,12 @@ class UserPreferencesRepository(private val context: Context) {
         val YTDLP_VERSION = stringPreferencesKey("ytdlp_version")
         val UBLOCK_VERSION = stringPreferencesKey("ublock_version")
         val DISABLED_EXTENSION_IDS = stringSetPreferencesKey("disabled_extension_ids")
+        val STUDIO_PRO_ENABLED = booleanPreferencesKey("studio_pro_enabled")
+        val STUDIO_PRO_AUTO_COLLAPSE = booleanPreferencesKey("studio_pro_auto_collapse")
+        val STUDIO_PRO_FOCUS_MODE = booleanPreferencesKey("studio_pro_focus_mode")
+        val STUDIO_PRO_SEO_HUD = booleanPreferencesKey("studio_pro_seo_hud")
+        val STUDIO_PRO_PRIVACY_BLUR = booleanPreferencesKey("studio_pro_privacy_blur")
+        val STUDIO_PRO_CUSTOM_TEMPLATE = stringPreferencesKey("studio_pro_custom_template")
     }
 
     fun getBootDohUrlSync(): String {
@@ -81,7 +93,13 @@ class UserPreferencesRepository(private val context: Context) {
             darkThemeEnabled = prefs[Keys.DARK_THEME] ?: true,
             ytDlpVersion = prefs[Keys.YTDLP_VERSION] ?: "Bundled 0.18.1",
             uBlockVersion = prefs[Keys.UBLOCK_VERSION] ?: UBlockOriginUpdater.BUNDLED_VERSION,
-            disabledExtensionIds = prefs[Keys.DISABLED_EXTENSION_IDS] ?: emptySet()
+            disabledExtensionIds = prefs[Keys.DISABLED_EXTENSION_IDS] ?: emptySet(),
+            studioProEnabled = prefs[Keys.STUDIO_PRO_ENABLED] ?: true,
+            studioProAutoCollapseSidebar = prefs[Keys.STUDIO_PRO_AUTO_COLLAPSE] ?: true,
+            studioProFocusMode = prefs[Keys.STUDIO_PRO_FOCUS_MODE] ?: false,
+            studioProSeoHudEnabled = prefs[Keys.STUDIO_PRO_SEO_HUD] ?: true,
+            studioProPrivacyBlur = prefs[Keys.STUDIO_PRO_PRIVACY_BLUR] ?: false,
+            studioProCustomTemplate = prefs[Keys.STUDIO_PRO_CUSTOM_TEMPLATE] ?: ""
         )
     }
 
@@ -155,5 +173,29 @@ class UserPreferencesRepository(private val context: Context) {
             }
             prefs[Keys.DISABLED_EXTENSION_IDS] = current
         }
+    }
+
+    suspend fun setStudioProEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_ENABLED] = enabled }
+    }
+
+    suspend fun setStudioProAutoCollapseSidebar(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_AUTO_COLLAPSE] = enabled }
+    }
+
+    suspend fun setStudioProFocusMode(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_FOCUS_MODE] = enabled }
+    }
+
+    suspend fun setStudioProSeoHudEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_SEO_HUD] = enabled }
+    }
+
+    suspend fun setStudioProPrivacyBlur(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_PRIVACY_BLUR] = enabled }
+    }
+
+    suspend fun setStudioProCustomTemplate(template: String) {
+        context.dataStore.edit { it[Keys.STUDIO_PRO_CUSTOM_TEMPLATE] = template }
     }
 }
