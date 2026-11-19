@@ -1,0 +1,97 @@
+{
+  "project": "YTube Studio",
+  "author": "Tamal Mitra",
+  "repository": "https://github.com/Imanagnator/YTube-Studio",
+  "application_id": "com.tamalmitra.ytubestudio",
+  "current_version": "1.0.1",
+  "version_code": 2,
+  "policy": "Never remove or disable any locked feature without explicit approval from Tamal Mitra.",
+  "locked_features": [
+    {
+      "id": "geckoview_stream_tab",
+      "name": "Ad-Free YouTube Stream Tab (GeckoView)",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "geckoview_studio_tab_lazy",
+      "name": "Lazy-Loaded Desktop YouTube Studio Workspace",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "mozilla_extensions_hub_7",
+      "name": "Mozilla Extensions Hub (7 Signed Extensions)",
+      "extensions": [
+        "uBlock0@raymondhill.net",
+        "sponsorBlocker@ajay.app",
+        "{762f9885-5a13-4abd-9c77-433dcd38b8fd}",
+        "deArrow@ajay.app",
+        "{0d7cafdd-501c-49ca-8ebb-e3341caaa55e}",
+        "enhancerforyoutube@maximerf.addons.mozilla.org",
+        "firefox@vid.io"
+      ],
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "full_auto_updater",
+      "name": "24h Automatic Updater for All 7 Extensions + yt-dlp Nightly",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "studio_creator_toolkit",
+      "name": "Built-In YTube Studio Creator Toolkit (SEO Counters, HD Thumbnail, Tag Copier)",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "ytdlp_ffmpeg_downloader",
+      "name": "yt-dlp + FFmpeg Download Manager with Native YouTube Download Button Hook",
+      "invariants": [
+        "android:extractNativeLibs=true",
+        "proguard-rules keep youtubedl-android, jackson, apache.commons, tukaani",
+        "4-stage multi-client extraction fallback",
+        "self-healing UpdateChannel._NIGHTLY retry"
+      ],
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "media3_offline_player",
+      "name": "Embedded AndroidX Media3 Offline Audio & Video Player",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "landscape_fullscreen_and_quality",
+      "name": "SENSOR_LANDSCAPE Fullscreen & Live Quality Selector (Auto–2160p)",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "background_playback",
+      "name": "Background Audio Playback Service",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "dynamic_doh_failover",
+      "name": "Dynamic Auto-DNS Failover (DoH)",
+      "status": "active",
+      "can_remove_without_permission": false
+    },
+    {
+      "id": "screen_recorder",
+      "name": "Built-In 720p/1080p MP4 Screen Recorder",
+      "status": "active",
+      "can_remove_without_permission": false
+    }
+  ],
+  "intentionally_removed_features": [
+    "floating_download_pill",
+    "network_speed_meter",
+    "gemini_api_placeholders"
+  ]
+}

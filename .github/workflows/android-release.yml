@@ -98,7 +98,8 @@ jobs:
         run: |
           VERSION_TAG="${GITHUB_REF_NAME}"
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            VERSION_TAG="v1.0.0-${GITHUB_SHA::7}"
+            APP_VER="$(grep -m1 'versionName' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')"
+            VERSION_TAG="v${APP_VER:-dev}-${GITHUB_SHA::7}"
           fi
           mkdir -p release-artifacts
           OUT_APK="release-artifacts/YTube-Studio-${VERSION_TAG}-arm64-release.apk"

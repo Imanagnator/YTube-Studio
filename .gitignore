@@ -36,8 +36,7 @@ my-upload-key.jks
 google-services.json
 firebase-applet-config.json
 
-# Private workspace attachments, project memory & temporary files
-/.project_memory/
+# Private workspace attachments & temporary files
 /public/assets/aistudio/
 /src/
 /metadata.json
