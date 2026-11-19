@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "name": "YTube Studio Enhancer",
+  "version": "1.0.0",
+  "author": "Tamal Mitra",
+  "description": "CSP-safe manual resolution selector, background playback unlocker, Studio PC zoom, built-in Download button hook, and session cookie bridge for yt-dlp.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tubedeck-adblock@tubedeck.app"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "cookies",
+    "*://*.youtube.com/*",
+    "*://*.youtube-nocookie.com/*",
+    "*://*.google.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.youtube-nocookie.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

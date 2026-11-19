@@ -1,0 +1,42 @@
+# Gradle & Build Outputs
+*.iml
+.gradle/
+.kotlin/
+build/
+app/build/
+.build-outputs/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE & OS
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets, Signing Keys & Local Config (NEVER commit to GitHub)
+local.properties
+secrets.properties
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.keystore.base64
+*.p12
+*.pem
+*.key
+debug.keystore
+debug.keystore.base64
+my-upload-key.jks
+google-services.json
+firebase-applet-config.json
+
+# Private workspace attachments / temporary files
+/public/assets/aistudio/
+/src/
+/metadata.json
