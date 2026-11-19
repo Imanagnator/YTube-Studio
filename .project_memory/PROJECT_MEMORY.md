@@ -11,14 +11,20 @@
 - **Package / Application ID**: `com.tamalmitra.ytubestudio`
 - **Android Namespace**: `com.example` *(DO NOT rename `com/example/` package directories or `namespace`)*
 - **License**: GNU GPL v3.0
-- **Current Version**: `1.0.1` (`versionCode = 2`)
-- **Workflow Preference**: Whenever a new version is built & verified, push `main` + the version tag (`vX.Y.Z`) directly to GitHub so GitHub Actions builds and publishes the signed Release APK for testing.
+- **Current Version**: `1.0.2` (`versionCode = 3`)
+- **Permanent Release Signing**: Configured in GitHub Repository Secrets (`RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`) — all builds from `v1.0.2` onward update seamlessly in-place.
+- **Workflow Preference**: Whenever a new version is built & verified, push `main` → wait **20–30 seconds cooldown** → push the version tag (`vX.Y.Z`) to GitHub automatically so GitHub Actions builds and publishes the signed Release APK.
 
 ---
 
 ## 2. Non-Negotiable Architecture Invariants (NEVER BREAK)
 1. **Feature Preservation**: Never remove, hide, or regress any feature listed in `FEATURE_LOCK.json` without explicit approval from Tamal Mitra.
-2. **Release APK `yt-dlp` + `FFmpeg` Stability**:
+2. **GeckoView WebExtensions & uBlock Origin Stability (CRITICAL)**:
+   - `GeckoRuntimeSettings.Builder()` MUST keep `.extensionsProcessEnabled(true)` and `.extensionsWebAPIEnabled(true)`.
+   - `configureWebExtensionController` MUST keep `ExtensionProcessDelegate` (`enableExtensionProcessSpawning()`), and `webExtensionController.setTabActive(...)` MUST stay wired on Stream/Studio open and tab switches.
+   - Extension installs MUST use Mozilla AMO direct HTTPS (`INSTALLATION_METHOD_MANAGER`) first with local XPI (`INSTALLATION_METHOD_FROM_FILE`) fallback, and `uBlock Origin` MUST prefer Mozilla AMO with `gorhill/uBlock` GitHub fallback.
+   - `tubedeck_adblock/content.js` MUST keep the lightweight companion YouTube Ad-Shield failsafe alongside uBlock Origin.
+3. **Release APK `yt-dlp` + `FFmpeg` Stability**:
    - `app/src/main/AndroidManifest.xml` MUST keep `android:extractNativeLibs="true"` on `<application>`.
    - `app/proguard-rules.pro` MUST keep `com.yausername.**`, `com.fasterxml.jackson.**` (+ annotations), `org.apache.commons.**`, `org.tukaani.**`, `com.example.data.model.**`, and `com.example.gecko.**`.
    - `MediaDownloadManager.kt` MUST keep the 4-stage multi-client extraction fallback (`android_vr,mweb,tv` → `cookies+mweb,tv,web_embedded` → `ios,android,web_embedded` → `default`), canonical URL normalization, `--no-playlist`, and self-healing `UpdateChannel._NIGHTLY` retry.
@@ -53,6 +59,7 @@
 ## 4. Release History & Roadmap
 - **`v1.0.0`** — YTube Studio rebrand (`com.tamalmitra.ytubestudio`), uBlock Origin auto-updater, cold-start/login speed optimization, Media3 offline player, YouTube native Download button hook, fullscreen landscape + quality switcher, Dynamic Auto-DNS failover, Screen Recorder, GitHub Actions CI.
 - **`v1.0.1`** — Full Mozilla Extensions Hub (7 official signed extensions), full 24h auto-updater for all extensions + `yt-dlp` nightly engine, built-in YTube Studio Creator Toolkit (SEO char counters, HD thumbnail opener, tag copier), Release APK `yt-dlp` R8 + `extractNativeLibs` + 4-stage multi-client fix, and permanent `.project_memory/` continuity database.
+- **`v1.0.2`** — Fixed uBlock Origin & Mozilla Extensions runtime in GeckoView 159 (`extensionsProcessEnabled`, `extensionsWebAPIEnabled`, `ExtensionProcessDelegate`, `setTabActive`, direct Mozilla AMO HTTPS install path, AMO primary for uBlock avoiding GitHub IP rate limits, first-boot reload, manual repair refresh, and companion YouTube Ad-Shield failsafe). First release signed with Tamal's permanent 27-year GitHub Secrets keystore.
 - **Upcoming Roadmap Ideas**:
   - Permanent GitHub Release keystore secret (`RELEASE_KEYSTORE_BASE64`) so every GitHub Release updates cleanly in-place with zero signature conflicts.
   - Optional in-app GitHub Release self-updater banner notifying when a newer `vX.Y.Z` tag is published on `Imanagnator/YTube-Studio`.

@@ -4,6 +4,20 @@ All notable changes to **YTube Studio** by **Tamal Mitra** are documented in thi
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-04-12
+
+### Fixed
+- **uBlock Origin & GeckoView WebExtensions Engine Reliability**
+  - Enabled GeckoView's dedicated `extensionsProcessEnabled(true)` and `extensionsWebAPIEnabled(true)` runtime settings plus automatic `ExtensionProcessDelegate` crash respawn (`enableExtensionProcessSpawning()`).
+  - Wired `webExtensionController.setTabActive(...)` across Stream & Studio tab switches so GeckoView's `mobileWindowTracker` always exposes the active tab to uBlock Origin, SponsorBlock, Enhancer for YouTube, and vidIQ.
+  - Switched extension installation to Firefox for Android's direct Mozilla AMO HTTPS install path (`INSTALLATION_METHOD_MANAGER`) with local signed XPI (`INSTALLATION_METHOD_FROM_FILE`) fallback.
+  - Made Mozilla AMO (`ublock-origin`) the primary source for uBlock Origin with `gorhill/uBlock` GitHub Releases as fallback, preventing mobile carrier IP GitHub HTTP 403 rate limits.
+  - Added automatic first-boot stream reload once uBlock Origin activates and manual one-tap reinstall/repair via each extension's Refresh button.
+  - Added a lightweight, CSP-safe companion YouTube Ad-Shield failsafe (cosmetic ad-slot hiding + instant pre-roll skip while uBlock initializes its filter lists) bridged to the live Ads Blocked counter.
+
+### Security
+- First release signed with Tamal Mitra's permanent 27-year GitHub Repository Secret keystore for seamless in-place updates from `v1.0.2` onward.
+
 ## [1.0.1] - 2026-04-12
 
 ### Added

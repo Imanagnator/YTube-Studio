@@ -813,7 +813,13 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
         val rt = geckoRuntime ?: return
         val spec = ManagedExtensionsCatalog.findById(extensionId) ?: return
         viewModelScope.launch {
-            installOrUpdateSingleExtensionInternal(rt, spec, silent = false, forceInstallIfMissing = true)
+            installOrUpdateSingleExtensionInternal(
+                rt = rt,
+                spec = spec,
+                silent = false,
+                forceInstallIfMissing = true,
+                forceReinstallIfSameVersion = true
+            )
         }
     }
 
@@ -838,7 +844,8 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                         rt = rt,
                         spec = spec,
                         silent = true,
-                        forceInstallIfMissing = isEnabled
+                        forceInstallIfMissing = isEnabled,
+                        forceReinstallIfSameVersion = false
                     )
                     if (didUpdate) updatedCount++
                 }
@@ -874,7 +881,8 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
         rt: GeckoRuntime,
         spec: ManagedExtensionSpec,
         silent: Boolean,
-        forceInstallIfMissing: Boolean
+        forceInstallIfMissing: Boolean,
+        forceReinstallIfSameVersion: Boolean = false
     ): Boolean {
         val currentState = managedExtensions.value.firstOrNull { it.spec.id == spec.id }
         if (currentState?.isUpdating == true) return false
@@ -901,53 +909,67 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
 
         val release = releaseRes.getOrThrow()
         val currentVer = currentState?.version.orEmpty()
-        val needsInstall = !alreadyInstalled || UBlockOriginUpdater.isNewerVersion(release.version, currentVer)
+        val needsInstall = !alreadyInstalled ||
+            forceReinstallIfSameVersion ||
+            UBlockOriginUpdater.isNewerVersion(release.version, currentVer)
         if (!needsInstall) {
-            geckoEngine.setManagedExtensionUpdating(spec.id, false, "v$currentVer up to date (${release.sourceLabel})")
+            geckoEngine.setManagedExtensionUpdating(spec.id, false, "v$currentVer active (${release.sourceLabel})")
             if (!silent) _snackbarEvents.tryEmit("${spec.name} v$currentVer is already latest")
             return false
         }
 
-        geckoEngine.setManagedExtensionUpdating(spec.id, true, "Downloading v${release.version}...")
-        val xpiRes = geckoEngine.extensionUpdater.downloadXpi(spec, release)
-        if (xpiRes.isFailure) {
-            val msg = xpiRes.exceptionOrNull()?.message ?: "Download failed"
-            geckoEngine.setManagedExtensionUpdating(
-                spec.id,
-                false,
-                if (alreadyInstalled) "v$currentVer active" else "Download failed: $msg"
-            )
-            if (!silent) _snackbarEvents.tryEmit("${spec.name} download failed: $msg")
-            return false
-        }
-
-        val xpiFile = xpiRes.getOrThrow()
-        geckoEngine.setManagedExtensionUpdating(spec.id, true, "Installing v${release.version}...")
         val enableAfter = if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
             userPrefs.value.adBlockEnabled
         } else {
             !userPrefs.value.disabledExtensionIds.contains(spec.id)
         }
 
-        val installDeferred = kotlinx.coroutines.CompletableDeferred<Result<String>>()
-        geckoEngine.installManagedExtensionFromXpi(
+        // Primary path (matches Firefox for Android / Fenix): let GeckoView's AddonManager install
+        // directly from the official signed HTTPS URL!
+        geckoEngine.setManagedExtensionUpdating(spec.id, true, "Installing v${release.version} from ${release.sourceLabel}...")
+        val directDeferred = kotlinx.coroutines.CompletableDeferred<Result<String>>()
+        geckoEngine.installManagedExtensionFromUrl(
             rt = rt,
             spec = spec,
-            xpiFile = xpiFile,
+            downloadUrl = release.downloadUrl,
             expectedVersion = release.version,
             enableAfterInstall = enableAfter
         ) { res ->
-            installDeferred.complete(res)
+            directDeferred.complete(res)
+        }
+        var installRes = directDeferred.await()
+
+        // Fallback path: download XPI via OkHttp and install from local file:// with INSTALLATION_METHOD_FROM_FILE
+        if (installRes.isFailure) {
+            geckoEngine.setManagedExtensionUpdating(spec.id, true, "Downloading v${release.version} package...")
+            val xpiRes = geckoEngine.extensionUpdater.downloadXpi(spec, release)
+            if (xpiRes.isSuccess) {
+                val xpiFile = xpiRes.getOrThrow()
+                geckoEngine.setManagedExtensionUpdating(spec.id, true, "Installing v${release.version} package...")
+                val localDeferred = kotlinx.coroutines.CompletableDeferred<Result<String>>()
+                geckoEngine.installManagedExtensionFromXpi(
+                    rt = rt,
+                    spec = spec,
+                    xpiFile = xpiFile,
+                    expectedVersion = release.version,
+                    enableAfterInstall = enableAfter
+                ) { res ->
+                    localDeferred.complete(res)
+                }
+                installRes = localDeferred.await()
+            }
         }
 
-        val installRes = installDeferred.await()
         return installRes.fold(
             onSuccess = { installedVer ->
                 if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
                     prefsRepo.setUBlockVersion(installedVer)
+                    if (enableAfter) {
+                        geckoEngine.reloadActiveStreamForAdBlock(delayMs = 1_500L)
+                    }
                 }
                 if (!silent) {
-                    _snackbarEvents.tryEmit("${spec.name} updated to v$installedVer")
+                    _snackbarEvents.tryEmit("${spec.name} v$installedVer active")
                 }
                 true
             },

@@ -368,6 +368,84 @@
     }
   }
 
+  // Lightweight CSP-safe YouTube Ad-Shield Failsafe (backs up uBlock Origin on first boot & mobile feed)
+  let lastAdSkipAt = 0;
+
+  function syncCompanionAdShieldCss() {
+    if (location.hostname === "studio.youtube.com") return;
+    const styleId = "ytstudio-adshield-css";
+    const existing = document.getElementById(styleId);
+    if (!config.adBlockEnabled) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing || !document.documentElement) return;
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = [
+      "ytm-promoted-sparkles-web-renderer,",
+      "ytm-promoted-video-renderer,",
+      "ytm-in-feed-ad-layout-renderer,",
+      "ytm-ad-slot-renderer,",
+      "ad-slot-renderer,",
+      "ytd-ad-slot-renderer,",
+      "ytd-promoted-sparkles-web-renderer,",
+      "ytd-banner-promo-renderer,",
+      "ytm-companion-slot,",
+      ".ytp-ad-overlay-container,",
+      ".ytp-ad-text-overlay,",
+      ".video-ads .ytp-ad-module,",
+      "#player-ads { display: none !important; }"
+    ].join("\n");
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function sweepActiveVideoAdIfAny() {
+    if (!config.adBlockEnabled || location.hostname === "studio.youtube.com") return;
+    const playerEl =
+      document.getElementById("movie_player") ||
+      document.querySelector(".html5-video-player");
+    if (!playerEl) return;
+
+    const isAdShowing =
+      playerEl.classList.contains("ad-showing") ||
+      playerEl.classList.contains("ad-interrupting") ||
+      Boolean(document.querySelector(".ytp-ad-player-overlay, .ytp-ad-player-overlay-layout"));
+    if (!isAdShowing) return;
+
+    const video = playerEl.querySelector("video.html5-main-video, video");
+    if (video) {
+      try {
+        video.muted = true;
+        if (Number.isFinite(video.duration) && video.duration > 0 && video.duration < 1800) {
+          video.currentTime = video.duration;
+        } else {
+          video.playbackRate = 16;
+        }
+      } catch (_) {}
+    }
+
+    const skipSelectors = [
+      ".ytp-skip-ad-button",
+      ".ytp-ad-skip-button",
+      ".ytp-ad-skip-button-modern",
+      "button.ytp-ad-skip-button-modern",
+      ".ytp-ad-skip-button-container button"
+    ];
+    for (const sel of skipSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn && typeof btn.click === "function") {
+        try { btn.click(); } catch (_) {}
+      }
+    }
+
+    const now = Date.now();
+    if (now - lastAdSkipAt > 3000) {
+      lastAdSkipAt = now;
+      browser.runtime.sendMessage({ type: "adBlocked" }).catch(() => {});
+    }
+  }
+
   // Built-in YTube Studio Creator Enhancer (Desktop Studio SEO char badges + HD Thumbnail & Tag Copy)
   function extractCurrentVideoId() {
     try {
@@ -477,6 +555,8 @@
     installBackgroundVisibilityHook();
     installBuiltInDownloadButtonHook();
     injectPreconnectHints();
+    syncCompanionAdShieldCss();
+    sweepActiveVideoAdIfAny();
     applyStudioZoom();
     refreshStudioCreatorBar();
     applyQuality(config.preferredQuality, forceQualityRefresh);
@@ -486,6 +566,7 @@
     installBackgroundVisibilityHook();
     installBuiltInDownloadButtonHook();
     injectPreconnectHints();
+    syncCompanionAdShieldCss();
     applyStudioZoom();
   }
 
@@ -521,6 +602,15 @@
     }
   });
 
+  // Fast ad-sweep guard (only acts if .ad-showing ever slips through while uBlock warms up)
+  setInterval(() => {
+    if (config.adBlockEnabled && location.hostname !== "studio.youtube.com") {
+      if (location.pathname.startsWith("/watch") || location.pathname.startsWith("/shorts/")) {
+        sweepActiveVideoAdIfAny();
+      }
+    }
+  }, 900);
+
   // Lightweight periodic guard on watch/shorts pages only so feed scrolling stays fast
   setInterval(() => {
     const urlChanged = location.href !== lastUrl;
@@ -532,6 +622,7 @@
       refreshStudioCreatorBar();
       return;
     }
+    syncCompanionAdShieldCss();
     const isVideoPage =
       location.pathname.startsWith("/watch") || location.pathname.startsWith("/shorts/");
     if (!isVideoPage) return;

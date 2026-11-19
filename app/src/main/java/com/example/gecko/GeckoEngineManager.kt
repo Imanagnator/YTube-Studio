@@ -2,6 +2,8 @@ package com.example.gecko
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.example.data.model.QualityOption
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -131,6 +133,8 @@ class GeckoEngineManager(private val context: Context) {
     private val installedExtensions = ConcurrentHashMap<String, WebExtension>()
     private var disabledExtensionIdsCache: Set<String> = emptySet()
     private var pendingFileCallback: ((Array<Uri>?) -> Unit)? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var hasReloadedForFirstUBlock = false
 
     val streamSession: GeckoSession by lazy { createStreamSession() }
     val studioSession: GeckoSession by lazy { createStudioSession() }
@@ -214,6 +218,8 @@ class GeckoEngineManager(private val context: Context) {
 
         val settingsBuilder = GeckoRuntimeSettings.Builder()
             .javaScriptEnabled(true)
+            .extensionsProcessEnabled(true)
+            .extensionsWebAPIEnabled(true)
             .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_DARK)
             .contentBlocking(contentBlocking)
             .aboutConfigEnabled(false)
@@ -240,6 +246,14 @@ class GeckoEngineManager(private val context: Context) {
     }
 
     private fun configureWebExtensionController(rt: GeckoRuntime) {
+        rt.webExtensionController.setExtensionProcessDelegate(
+            object : WebExtensionController.ExtensionProcessDelegate {
+                override fun onDisabledProcessSpawning() {
+                    Log.w(TAG, "Extension process spawning was disabled after crash — re-enabling automatically")
+                    runCatching { rt.webExtensionController.enableExtensionProcessSpawning() }
+                }
+            }
+        )
         rt.webExtensionController.setPromptDelegate(object : WebExtensionController.PromptDelegate {
             override fun onInstallPromptRequest(
                 extension: WebExtension,
@@ -330,13 +344,20 @@ class GeckoEngineManager(private val context: Context) {
     private fun installBundledUBlockOrigin(rt: GeckoRuntime) {
         runCatching {
             val xpiFile = uBlockUpdater.extractBundledXpi()
-            installUBlockFromXpiFile(rt, xpiFile, UBlockOriginUpdater.BUNDLED_VERSION)
+            installUBlockFromXpiFile(rt, xpiFile, UBlockOriginUpdater.BUNDLED_VERSION, isFirstBootInstall = true)
         }.onFailure { err ->
             Log.e(TAG, "Failed to extract bundled uBlock Origin XPI", err)
             _uBlockState.update {
                 it.copy(
                     isInstalled = false,
-                    statusDetail = "uBlock Origin fallback active (${err.message ?: "init error"})"
+                    statusDetail = "Will auto-install from Mozilla AMO (${err.message ?: "init error"})"
+                )
+            }
+            updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                it.copy(
+                    isInstalled = false,
+                    isUpdating = false,
+                    statusDetail = "Waiting for Mozilla AMO auto-install..."
                 )
             }
         }
@@ -346,18 +367,27 @@ class GeckoEngineManager(private val context: Context) {
         rt: GeckoRuntime,
         xpiFile: File,
         expectedVersion: String,
+        isFirstBootInstall: Boolean = false,
         onComplete: ((Result<String>) -> Unit)? = null
     ) {
         val fileUri = Uri.fromFile(xpiFile).toString()
-        rt.webExtensionController.install(fileUri).accept(
+        rt.webExtensionController.install(fileUri, WebExtensionController.INSTALLATION_METHOD_FROM_FILE).accept(
             { ext ->
                 if (ext != null) {
                     val ver = ext.metaData.version.takeIf { it.isNotBlank() } ?: expectedVersion
-                    onUBlockExtensionReady(rt, ext, "uBlock Origin v$ver active (gorhill/uBlock)")
+                    onUBlockExtensionReady(
+                        rt = rt,
+                        ext = ext,
+                        detail = "v$ver active (Mozilla signed)",
+                        triggerFirstReload = isFirstBootInstall
+                    )
                     onComplete?.invoke(Result.success(ver))
                 } else {
-                    val msg = "uBlock Origin installation returned null extension"
-                    _uBlockState.update { it.copy(isUpdating = false, statusDetail = msg) }
+                    val msg = "uBlock Origin install returned null"
+                    _uBlockState.update { it.copy(isInstalled = false, isUpdating = false, statusDetail = msg) }
+                    updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                        it.copy(isInstalled = false, isUpdating = false, statusDetail = msg)
+                    }
                     onComplete?.invoke(Result.failure(IllegalStateException(msg)))
                 }
             },
@@ -366,8 +396,16 @@ class GeckoEngineManager(private val context: Context) {
                 val msg = err?.message ?: "XPI install error"
                 _uBlockState.update {
                     it.copy(
+                        isInstalled = false,
                         isUpdating = false,
-                        statusDetail = "uBlock Origin install warning: $msg"
+                        statusDetail = "Will retry via Mozilla AMO ($msg)"
+                    )
+                }
+                updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                    it.copy(
+                        isInstalled = false,
+                        isUpdating = false,
+                        statusDetail = "Will retry via Mozilla AMO ($msg)"
                     )
                 }
                 onComplete?.invoke(Result.failure(err ?: IllegalStateException(msg)))
@@ -375,14 +413,36 @@ class GeckoEngineManager(private val context: Context) {
         )
     }
 
-    private fun onUBlockExtensionReady(rt: GeckoRuntime, ext: WebExtension, detail: String) {
+    private fun onUBlockExtensionReady(
+        rt: GeckoRuntime,
+        ext: WebExtension,
+        detail: String,
+        triggerFirstReload: Boolean = false
+    ) {
         uBlockExtension = ext
         installedExtensions[ext.id] = ext
         val version = ext.metaData.version.takeIf { it.isNotBlank() } ?: UBlockOriginUpdater.BUNDLED_VERSION
         if (cachedAdBlockEnabled) {
-            rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
+            rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER).accept(
+                { enabledExt ->
+                    if (enabledExt != null) {
+                        uBlockExtension = enabledExt
+                        installedExtensions[enabledExt.id] = enabledExt
+                    }
+                },
+                { err -> Log.w(TAG, "uBlock enable returned warning", err) }
+            )
+            rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.APP)
         } else {
-            rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
+            rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER).accept(
+                { disabledExt ->
+                    if (disabledExt != null) {
+                        uBlockExtension = disabledExt
+                        installedExtensions[disabledExt.id] = disabledExt
+                    }
+                },
+                { err -> Log.w(TAG, "uBlock disable returned warning", err) }
+            )
         }
         _uBlockState.value = UBlockStatus(
             isInstalled = true,
@@ -400,6 +460,20 @@ class GeckoEngineManager(private val context: Context) {
                 statusDetail = detail
             )
         }
+        if (triggerFirstReload && cachedAdBlockEnabled && !hasReloadedForFirstUBlock) {
+            hasReloadedForFirstUBlock = true
+            reloadActiveStreamForAdBlock(delayMs = 1_800L)
+        }
+    }
+
+    fun reloadActiveStreamForAdBlock(delayMs: Long = 1_200L) {
+        mainHandler.postDelayed({
+            runCatching {
+                if (streamSession.isOpen && !_mediaState.value.isPlaying) {
+                    streamSession.reload()
+                }
+            }
+        }, delayMs)
     }
 
     fun setUBlockUpdating(updating: Boolean, detail: String? = null) {
@@ -512,6 +586,29 @@ class GeckoEngineManager(private val context: Context) {
         }
     }
 
+    /**
+     * Installs an officially Mozilla-signed extension directly from its HTTPS download URL
+     * (identical to Firefox for Android / Fenix's production AddonManager install path).
+     */
+    fun installManagedExtensionFromUrl(
+        rt: GeckoRuntime,
+        spec: ManagedExtensionSpec,
+        downloadUrl: String,
+        expectedVersion: String,
+        enableAfterInstall: Boolean = true,
+        onComplete: ((Result<String>) -> Unit)? = null
+    ) {
+        installManagedExtensionUri(
+            rt = rt,
+            spec = spec,
+            installUri = downloadUrl,
+            installMethod = WebExtensionController.INSTALLATION_METHOD_MANAGER,
+            expectedVersion = expectedVersion,
+            enableAfterInstall = enableAfterInstall,
+            onComplete = onComplete
+        )
+    }
+
     fun installManagedExtensionFromXpi(
         rt: GeckoRuntime,
         spec: ManagedExtensionSpec,
@@ -520,33 +617,65 @@ class GeckoEngineManager(private val context: Context) {
         enableAfterInstall: Boolean = true,
         onComplete: ((Result<String>) -> Unit)? = null
     ) {
-        if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
-            installUBlockFromXpiFile(rt, xpiFile, expectedVersion, onComplete)
-            return
-        }
         val fileUri = Uri.fromFile(xpiFile).toString()
-        rt.webExtensionController.install(fileUri).accept(
+        installManagedExtensionUri(
+            rt = rt,
+            spec = spec,
+            installUri = fileUri,
+            installMethod = WebExtensionController.INSTALLATION_METHOD_FROM_FILE,
+            expectedVersion = expectedVersion,
+            enableAfterInstall = enableAfterInstall,
+            onComplete = onComplete
+        )
+    }
+
+    private fun installManagedExtensionUri(
+        rt: GeckoRuntime,
+        spec: ManagedExtensionSpec,
+        installUri: String,
+        installMethod: String,
+        expectedVersion: String,
+        enableAfterInstall: Boolean,
+        onComplete: ((Result<String>) -> Unit)?
+    ) {
+        rt.webExtensionController.install(installUri, installMethod).accept(
             { ext ->
                 if (ext != null) {
-                    installedExtensions[spec.id] = ext
                     val ver = ext.metaData.version.takeIf { it.isNotBlank() } ?: expectedVersion
-                    if (enableAfterInstall) {
-                        rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
-                    } else {
-                        rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
-                    }
-                    updateManagedExtensionState(spec.id) {
-                        it.copy(
-                            isInstalled = true,
-                            isEnabled = enableAfterInstall,
-                            version = ver,
-                            isUpdating = false,
-                            statusDetail = if (enableAfterInstall) {
-                                "v$ver active (Mozilla signed)"
-                            } else {
-                                "v$ver installed (paused)"
-                            }
+                    if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                        onUBlockExtensionReady(
+                            rt = rt,
+                            ext = ext,
+                            detail = "v$ver active (Mozilla signed)",
+                            triggerFirstReload = true
                         )
+                    } else {
+                        installedExtensions[spec.id] = ext
+                        if (enableAfterInstall) {
+                            rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER).accept(
+                                { updated -> if (updated != null) installedExtensions[spec.id] = updated },
+                                {}
+                            )
+                            rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.APP)
+                        } else {
+                            rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER).accept(
+                                { updated -> if (updated != null) installedExtensions[spec.id] = updated },
+                                {}
+                            )
+                        }
+                        updateManagedExtensionState(spec.id) {
+                            it.copy(
+                                isInstalled = true,
+                                isEnabled = enableAfterInstall,
+                                version = ver,
+                                isUpdating = false,
+                                statusDetail = if (enableAfterInstall) {
+                                    "v$ver active (Mozilla signed)"
+                                } else {
+                                    "v$ver installed (paused)"
+                                }
+                            )
+                        }
                     }
                     onComplete?.invoke(Result.success(ver))
                 } else {
@@ -557,7 +686,7 @@ class GeckoEngineManager(private val context: Context) {
             },
             { err ->
                 val msg = err?.message ?: "XPI install error"
-                Log.e(TAG, "GeckoView failed to install ${spec.name}", err)
+                Log.e(TAG, "GeckoView failed to install ${spec.name} via $installMethod", err)
                 updateManagedExtensionState(spec.id) {
                     it.copy(isUpdating = false, statusDetail = "Install warning: $msg")
                 }
@@ -619,9 +748,16 @@ class GeckoEngineManager(private val context: Context) {
     }
 
     fun onAppForegrounded(isStudioTabActive: Boolean = false) {
+        val rt = runtime
         runCatching {
-            if (streamSession.isOpen) streamSession.setActive(!isStudioTabActive || cachedBgAudioEnabled)
-            if (studioSession.isOpen) studioSession.setActive(isStudioTabActive)
+            if (streamSession.isOpen) {
+                streamSession.setActive(!isStudioTabActive || cachedBgAudioEnabled)
+                rt?.webExtensionController?.setTabActive(streamSession, !isStudioTabActive)
+            }
+            if (studioSession.isOpen) {
+                studioSession.setActive(isStudioTabActive)
+                rt?.webExtensionController?.setTabActive(studioSession, isStudioTabActive)
+            }
         }
     }
 
@@ -630,12 +766,15 @@ class GeckoEngineManager(private val context: Context) {
         if (isStudioTab) {
             ensureStudioOpened()
         }
+        val rt = runtime
         runCatching {
             if (streamSession.isOpen) {
                 streamSession.setActive(isStreamTab || backgroundAudioEnabled)
+                rt?.webExtensionController?.setTabActive(streamSession, isStreamTab)
             }
             if (studioSession.isOpen) {
                 studioSession.setActive(isStudioTab)
+                rt?.webExtensionController?.setTabActive(studioSession, isStudioTab)
             }
         }
     }
@@ -903,6 +1042,7 @@ class GeckoEngineManager(private val context: Context) {
     fun openStreamHome(rt: GeckoRuntime) {
         if (!streamSession.isOpen) {
             streamSession.open(rt)
+            runCatching { rt.webExtensionController.setTabActive(streamSession, true) }
             streamSession.loadUri(HOME_STREAM_URL)
         }
     }
@@ -910,6 +1050,7 @@ class GeckoEngineManager(private val context: Context) {
     fun openStudioHome(rt: GeckoRuntime) {
         if (!studioSession.isOpen) {
             studioSession.open(rt)
+            runCatching { rt.webExtensionController.setTabActive(studioSession, true) }
             studioSession.loadUri(HOME_STUDIO_URL)
         }
     }

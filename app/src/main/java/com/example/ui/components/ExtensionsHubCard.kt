@@ -255,7 +255,7 @@ fun ExtensionsHubCard(
                                     text = extState.statusDetail,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (extState.isInstalled && extState.isEnabled) ElectricMint else CyanTelemetry,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }

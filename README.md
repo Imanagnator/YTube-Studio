@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.1-E50914?style=flat-square" />
+  <img alt="Version" src="https://img.shields.io/badge/version-1.0.2-E50914?style=flat-square" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%2010%2B%20(arm64)-00E676?style=flat-square" />
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-00E5FF?style=flat-square" />
   <img alt="Author" src="https://img.shields.io/badge/author-Tamal%20Mitra-FFB300?style=flat-square" />

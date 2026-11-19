@@ -57,9 +57,10 @@ object ManagedExtensionsCatalog {
         id = UBlockOriginUpdater.UBLOCK_EXTENSION_ID,
         key = "ublock_origin",
         name = "uBlock Origin",
-        description = "Blocks YouTube ads, trackers & banners (gorhill/uBlock)",
+        description = "Blocks YouTube ads, trackers & banners (Mozilla AMO / gorhill)",
         category = ExtensionCategory.BOTH,
         source = ExtensionSource.GITHUB_UBLOCK,
+        amoSlug = "ublock-origin",
         bundledAssetPath = UBlockOriginUpdater.BUNDLED_ASSET_PATH,
         bundledVersion = UBlockOriginUpdater.BUNDLED_VERSION
     )
@@ -146,7 +147,7 @@ class ManagedExtensionUpdater(
     companion object {
         private const val TAG = "ManagedExtensionUpdater"
         private const val AMO_API_BASE = "https://addons.mozilla.org/api/v5/addons/addon/"
-        private const val USER_AGENT = "YTubeStudio-Android/1.0.1"
+        private const val USER_AGENT = "YTubeStudio-Android/1.0.2"
     }
 
     private val client = OkHttpClient.Builder()
@@ -159,12 +160,19 @@ class ManagedExtensionUpdater(
         withContext(Dispatchers.IO) {
             when (spec.source) {
                 ExtensionSource.GITHUB_UBLOCK -> {
-                    uBlockUpdater.fetchLatestGitHubRelease().map { rel ->
-                        ManagedExtensionRelease(
-                            version = rel.version,
-                            downloadUrl = rel.downloadUrl,
-                            sourceLabel = "GitHub (gorhill/uBlock)"
-                        )
+                    // Prefer Mozilla AMO signed XPI (no 60/hr GitHub IP rate limit on mobile networks),
+                    // falling back automatically to gorhill/uBlock GitHub Releases if AMO fails.
+                    val amoRes = fetchLatestAmoRelease(spec)
+                    if (amoRes.isSuccess) {
+                        amoRes
+                    } else {
+                        uBlockUpdater.fetchLatestGitHubRelease().map { rel ->
+                            ManagedExtensionRelease(
+                                version = rel.version,
+                                downloadUrl = rel.downloadUrl,
+                                sourceLabel = "GitHub (gorhill/uBlock)"
+                            )
+                        }
                     }
                 }
                 ExtensionSource.MOZILLA_AMO -> fetchLatestAmoRelease(spec)

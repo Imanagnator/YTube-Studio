@@ -101,6 +101,10 @@ if (browser.runtime && browser.runtime.onMessage) {
       sendResponse({ adBlockEnabled, backgroundAudioEnabled, preferredQuality, studioZoomPercent });
       return true;
     }
+    if (msg.type === "adBlocked") {
+      postNative({ type: "adBlocked" });
+      return false;
+    }
     if (msg.type === "qualityState") {
       postNative({
         type: "qualityState",
