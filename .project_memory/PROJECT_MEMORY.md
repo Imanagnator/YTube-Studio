@@ -11,7 +11,7 @@
 - **Package / Application ID**: `com.tamalmitra.ytubestudio`
 - **Android Namespace**: `com.example` *(DO NOT rename `com/example/` package directories or `namespace`)*
 - **License**: GNU GPL v3.0
-- **Current Version**: `1.0.2` (`versionCode = 3`)
+- **Current Version**: `1.0.3` (`versionCode = 4`)
 - **Permanent Release Signing**: Configured in GitHub Repository Secrets (`RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`) — all builds from `v1.0.2` onward update seamlessly in-place.
 - **Workflow Preference**: Whenever a new version is built & verified, push `main` → wait **20–30 seconds cooldown** → push the version tag (`vX.Y.Z`) to GitHub automatically so GitHub Actions builds and publishes the signed Release APK.
 
@@ -35,9 +35,10 @@
 4. **Signing & Secrets Hygiene**:
    - Never commit `.jks`, `.keystore`, `.env`, Personal Access Tokens, or `local.properties` to Git.
    - Never modify `signingConfigs` or `buildTypes.*.signingConfig` in `app/build.gradle.kts`.
-5. **Removed Features (Do NOT Re-Add Unless Requested)**:
+6. **Removed Features (Do NOT Re-Add Unless Requested)**:
    - Floating download overlay pill (replaced by hooking YouTube's built-in Download button).
    - Network speed meter module.
+   - Studio `%` screen zoom selector & `document.documentElement.style.zoom` mutation (removed per Tamal's explicit request in `v1.0.3`).
    - Any AI/Gemini placeholder branding or unused API keys.
 
 ---
@@ -60,6 +61,7 @@
 - **`v1.0.0`** — YTube Studio rebrand (`com.tamalmitra.ytubestudio`), uBlock Origin auto-updater, cold-start/login speed optimization, Media3 offline player, YouTube native Download button hook, fullscreen landscape + quality switcher, Dynamic Auto-DNS failover, Screen Recorder, GitHub Actions CI.
 - **`v1.0.1`** — Full Mozilla Extensions Hub (7 official signed extensions), full 24h auto-updater for all extensions + `yt-dlp` nightly engine, built-in YTube Studio Creator Toolkit (SEO char counters, HD thumbnail opener, tag copier), Release APK `yt-dlp` R8 + `extractNativeLibs` + 4-stage multi-client fix, and permanent `.project_memory/` continuity database.
 - **`v1.0.2`** — Fixed uBlock Origin & Mozilla Extensions runtime in GeckoView 159 (`extensionsProcessEnabled`, `extensionsWebAPIEnabled`, `ExtensionProcessDelegate`, `setTabActive`, direct Mozilla AMO HTTPS install path, AMO primary for uBlock avoiding GitHub IP rate limits, first-boot reload, manual repair refresh, and companion YouTube Ad-Shield failsafe). First release signed with Tamal's permanent 27-year GitHub Secrets keystore.
+- **`v1.0.3`** — Fixed Studio video/thumbnail/subtitle uploads (MIME extension sanitization, `isAwaitingFilePicker` session guard, `upload.youtube.com`/`googleapis.com` allowlist, native Upload DOM trigger), enabled synced in-app login/signup popup for trusted extensions (vidIQ, SponsorBlock, etc.), and removed the non-working Studio `%` screen zoom button.
 - **Upcoming Roadmap Ideas**:
   - Permanent GitHub Release keystore secret (`RELEASE_KEYSTORE_BASE64`) so every GitHub Release updates cleanly in-place with zero signature conflicts.
   - Optional in-app GitHub Release self-updater banner notifying when a newer `vX.Y.Z` tag is published on `Imanagnator/YTube-Studio`.

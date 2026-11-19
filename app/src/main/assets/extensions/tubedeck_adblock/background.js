@@ -76,6 +76,8 @@ function connectNative() {
       } else if (msg.type === "exportCookies") {
         const cookiesTxt = await exportYouTubeCookiesTxt();
         postNative({ type: "cookiesExport", cookiesTxt });
+      } else if (msg.type === "triggerStudioUpload") {
+        broadcastToTabs({ type: "triggerStudioUpload" });
       } else if (msg.type === "updateSettings") {
         broadcastToTabs({
           type: "settings",

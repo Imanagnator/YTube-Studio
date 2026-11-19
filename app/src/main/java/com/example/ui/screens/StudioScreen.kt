@@ -4,16 +4,13 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,11 +20,8 @@ import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ScreenLockPortrait
-import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,10 +31,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -68,13 +58,10 @@ fun StudioScreen(
     onBack: () -> Unit,
     onReload: () -> Unit,
     onSelectShortcut: (StudioShortcut) -> Unit,
-    onZoomChange: (Int) -> Unit,
     onToggleKeepAwake: (Boolean) -> Unit,
     onOpenNotifications: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var zoomMenuExpanded by remember { mutableStateOf(false) }
-
     Column(modifier = modifier.fillMaxSize()) {
         if (!isFullScreen) {
         // Dedicated Hardcoded Desktop YouTube Studio Command Header
@@ -143,42 +130,6 @@ fun StudioScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Desktop Zoom Preset
-                        Box {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .clickable { zoomMenuExpanded = true }
-                                    .testTag("studio_zoom_selector")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom", modifier = Modifier.size(15.dp))
-                                    Text("${prefs.studioDesktopZoomPercent}%", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                            DropdownMenu(
-                                expanded = zoomMenuExpanded,
-                                onDismissRequest = { zoomMenuExpanded = false }
-                            ) {
-                                listOf(65, 75, 85, 100, 115).forEach { pct ->
-                                    DropdownMenuItem(
-                                        text = { Text("$pct% Desktop Scale") },
-                                        onClick = {
-                                            zoomMenuExpanded = false
-                                            onZoomChange(pct)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
                         // Keep Screen Awake during long uploads
                         Surface(
                             shape = RoundedCornerShape(10.dp),

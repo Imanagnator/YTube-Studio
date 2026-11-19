@@ -299,10 +299,36 @@
     reportQualityState(player, resolvedCode, forceRefresh);
   }
 
-  function applyStudioZoom() {
+  function resetStudioZoom() {
     if (location.hostname === "studio.youtube.com" && document.documentElement) {
-      const pct = Number(config.studioZoomPercent) || 85;
-      document.documentElement.style.zoom = String(pct / 100);
+      document.documentElement.style.zoom = "";
+    }
+  }
+
+  function openStudioUploadModalFromDom() {
+    if (location.hostname !== "studio.youtube.com") return;
+    // Try YouTube Studio's direct quick-upload icon first
+    const directUploadBtn = document.querySelector(
+      "#upload-icon, ytcp-icon-button#upload-icon, button[aria-label='Upload videos'], button[aria-label*='Upload video' i]"
+    );
+    if (directUploadBtn && typeof directUploadBtn.click === "function") {
+      directUploadBtn.click();
+      return;
+    }
+    // Otherwise click Studio's "Create" button and then the first "Upload videos" menu item
+    const createBtn = document.querySelector(
+      "#create-icon, ytcp-button#create-icon, button[aria-label='Create']"
+    );
+    if (createBtn && typeof createBtn.click === "function") {
+      createBtn.click();
+      setTimeout(() => {
+        const uploadMenuItem = document.querySelector(
+          "#text-item-0, tp-yt-paper-item[test-id='upload-beta'], tp-yt-paper-item[test-id*='upload']"
+        );
+        if (uploadMenuItem && typeof uploadMenuItem.click === "function") {
+          uploadMenuItem.click();
+        }
+      }, 350);
     }
   }
 
@@ -557,7 +583,7 @@
     injectPreconnectHints();
     syncCompanionAdShieldCss();
     sweepActiveVideoAdIfAny();
-    applyStudioZoom();
+    resetStudioZoom();
     refreshStudioCreatorBar();
     applyQuality(config.preferredQuality, forceQualityRefresh);
   }
@@ -567,7 +593,7 @@
     installBuiltInDownloadButtonHook();
     injectPreconnectHints();
     syncCompanionAdShieldCss();
-    applyStudioZoom();
+    resetStudioZoom();
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -596,6 +622,8 @@
       setTimeout(() => reportQualityState(findRawPlayer(), LABEL_TO_CODE[config.preferredQuality.toLowerCase()], true), 3000);
     } else if (msg.type === "queryQuality") {
       reportQualityState(findRawPlayer(), LABEL_TO_CODE[(config.preferredQuality || "auto").toLowerCase()], true);
+    } else if (msg.type === "triggerStudioUpload") {
+      openStudioUploadModalFromDom();
     } else if (msg.type === "settings") {
       config = { ...config, ...msg };
       applyAllConfig(false);

@@ -144,6 +144,12 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
     private val _showAuthDialog = MutableStateFlow(false)
     val showAuthDialog: StateFlow<Boolean> = _showAuthDialog.asStateFlow()
 
+    private val _authDialogUrl = MutableStateFlow(GeckoEngineManager.GOOGLE_LOGIN_URL)
+    val authDialogUrl: StateFlow<String> = _authDialogUrl.asStateFlow()
+
+    private val _authDialogTitle = MutableStateFlow("Google Sign-In (Synced Session)")
+    val authDialogTitle: StateFlow<String> = _authDialogTitle.asStateFlow()
+
     private val _showNotificationsSheet = MutableStateFlow(false)
     val showNotificationsSheet: StateFlow<Boolean> = _showNotificationsSheet.asStateFlow()
 
@@ -313,6 +319,11 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                             message = "YouTube & YT Studio sessions are synced.",
                             category = NotificationCategory.SYSTEM
                         )
+                    }
+                    is GeckoEvent.OpenAuthPopup -> {
+                        _authDialogUrl.value = event.url
+                        _authDialogTitle.value = event.title
+                        _showAuthDialog.value = true
                     }
                     is GeckoEvent.FileUploadRequested -> {
                         _filePickerEvents.tryEmit(event)
@@ -677,10 +688,20 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
             ?.groupValues
             ?.getOrNull(1)
 
+        if (shortcut.id == "upload") {
+            if (!channelId.isNullOrBlank()) {
+                geckoEngine.loadStudioUrl("https://studio.youtube.com/channel/$channelId/videos/upload?d=ud")
+            } else if (!current.contains("studio.youtube.com", ignoreCase = true)) {
+                geckoEngine.loadStudioUrl(GeckoEngineManager.HOME_STUDIO_URL)
+            }
+            // Also trigger Studio's native Create -> Upload dialog directly from the page DOM
+            geckoEngine.triggerStudioUploadDialog()
+            return
+        }
+
         val targetUrl = if (!channelId.isNullOrBlank()) {
             when (shortcut.id) {
                 "dashboard" -> "https://studio.youtube.com/channel/$channelId"
-                "upload" -> "https://studio.youtube.com/channel/$channelId/videos/upload?d=ud"
                 "content" -> "https://studio.youtube.com/channel/$channelId/videos/upload"
                 "analytics" -> "https://studio.youtube.com/channel/$channelId/analytics"
                 "comments" -> "https://studio.youtube.com/channel/$channelId/comments"
@@ -689,10 +710,7 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                 else -> shortcut.url
             }
         } else {
-            when (shortcut.id) {
-                "upload" -> "https://studio.youtube.com/?upload=1"
-                else -> "https://studio.youtube.com/"
-            }
+            GeckoEngineManager.HOME_STUDIO_URL
         }
         geckoEngine.loadStudioUrl(targetUrl)
     }
@@ -767,12 +785,19 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openInAppGoogleLogin() {
+        _authDialogUrl.value = GeckoEngineManager.GOOGLE_LOGIN_URL
+        _authDialogTitle.value = "Google Sign-In (Synced Session)"
         _showAuthDialog.value = true
     }
 
     fun closeInAppGoogleLogin() {
+        val wasExtensionPopup = !_authDialogUrl.value.contains("accounts.google.com", ignoreCase = true)
         _showAuthDialog.value = false
         geckoEngine.closeAuthSession()
+        if (wasExtensionPopup && geckoEngine.studioSession.isOpen) {
+            geckoEngine.studioSession.reload()
+            _snackbarEvents.tryEmit("Synced extension account with YT Studio")
+        }
     }
 
     fun toggleAutoUpdateExtensions(enabled: Boolean) {

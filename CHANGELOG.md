@@ -4,6 +4,19 @@ All notable changes to **YTube Studio** by **Tamal Mitra** are documented in thi
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-04-12
+
+### Fixed
+- **YouTube Studio Video / Thumbnail / Subtitle Uploads**
+  - Sanitized raw file extensions (`.mp4`, `.mov`, `.mkv`, `.srt`, etc.) sent by YouTube Studio's `<input accept="...">` into valid Android MIME families with safe `*/*` fallback so Android's file picker never greys out or blocks selectable files.
+  - Prevented `studioSession` from deactivating (`setActive(false)`) while the Android system file picker is open so Studio never drops upload callbacks.
+  - Added `upload.youtube.com`, `googleapis.com`, and `clients.google.com` to Studio infrastructure hosts and wired the red **Upload** shortcut to directly trigger YouTube Studio's native Upload modal.
+- **Extension Login & Signup Support (vidIQ & Installed Extensions)**
+  - Allowed trusted domains for installed extensions (`vidiq.com`, `vid.io`, `ajay.app`, `returnyoutubedislike.com`, `mrfdev.com`, `moz-extension://`) to open inside a synced in-app Auth Modal sharing the same GeckoRuntime cookie jar, automatically reloading Studio on **Done** while keeping random external links safely blocked.
+
+### Removed
+- Removed the non-working Studio `%` screen zoom selector from the Studio top bar and disabled CSS `style.zoom` injection on `studio.youtube.com` (per user request, also improving Studio touch hitboxes).
+
 ## [1.0.2] - 2026-04-12
 
 ### Fixed

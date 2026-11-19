@@ -163,6 +163,8 @@ fun TubeDeckAppRoot(
     val videoProbeState by viewModel.videoProbeState.collectAsStateWithLifecycle()
     val downloadSheetUrl by viewModel.downloadSheetUrl.collectAsStateWithLifecycle()
     val showAuthDialog by viewModel.showAuthDialog.collectAsStateWithLifecycle()
+    val authDialogUrl by viewModel.authDialogUrl.collectAsStateWithLifecycle()
+    val authDialogTitle by viewModel.authDialogTitle.collectAsStateWithLifecycle()
     val showNotificationsSheet by viewModel.showNotificationsSheet.collectAsStateWithLifecycle()
     val showDownloadSheet by viewModel.showDownloadSheet.collectAsStateWithLifecycle()
     val isUpdatingYtDlp by viewModel.isUpdatingYtDlp.collectAsStateWithLifecycle()
@@ -233,16 +235,32 @@ fun TubeDeckAppRoot(
         }
     }
 
-    // Native SAF File Picker for YouTube Studio video/thumbnail uploads
+    // Native SAF File Picker for YouTube Studio video/thumbnail/subtitle uploads
     val singleFilePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        }
         viewModel.geckoEngine.deliverFilePickerResult(uri?.let { arrayOf(it) })
     }
 
     val multiFilePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
+        uris.forEach { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        }
         viewModel.geckoEngine.deliverFilePickerResult(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
     }
 
@@ -271,10 +289,23 @@ fun TubeDeckAppRoot(
 
     LaunchedEffect(Unit) {
         viewModel.filePickerEvents.collect { req ->
-            if (req.allowMultiple) {
-                multiFilePickerLauncher.launch(req.mimeTypes)
-            } else {
-                singleFilePickerLauncher.launch(req.mimeTypes)
+            val primaryMimes = req.mimeTypes.takeIf { it.isNotEmpty() } ?: arrayOf("*/*")
+            val launched = runCatching {
+                if (req.allowMultiple) {
+                    multiFilePickerLauncher.launch(primaryMimes)
+                } else {
+                    singleFilePickerLauncher.launch(primaryMimes)
+                }
+            }.recoverCatching {
+                // Retry with wildcard "*/*" if OEM picker rejects specific MIME filters
+                if (req.allowMultiple) {
+                    multiFilePickerLauncher.launch(arrayOf("*/*"))
+                } else {
+                    singleFilePickerLauncher.launch(arrayOf("*/*"))
+                }
+            }
+            if (launched.isFailure) {
+                viewModel.geckoEngine.deliverFilePickerResult(null)
             }
         }
     }
@@ -476,7 +507,6 @@ fun TubeDeckAppRoot(
                                     onBack = viewModel::navigateStudioBack,
                                     onReload = viewModel::reloadStudio,
                                     onSelectShortcut = viewModel::openStudioShortcut,
-                                    onZoomChange = viewModel::setStudioZoomPercent,
                                     onToggleKeepAwake = viewModel::toggleKeepScreenAwakeUpload,
                                     onOpenNotifications = viewModel::openNotificationsSheet
                                 )
@@ -571,9 +601,13 @@ fun TubeDeckAppRoot(
     if (showAuthDialog) {
         val rt = viewModel.getRuntime()
         if (rt != null) {
-            val authSession = remember(rt) { viewModel.geckoEngine.getOrCreateAuthSession(rt) }
+            val authSession = remember(rt, authDialogUrl) {
+                viewModel.geckoEngine.getOrCreateAuthSession(rt, authDialogUrl)
+            }
             InAppGoogleLoginDialog(
                 authSession = authSession,
+                title = authDialogTitle,
+                targetUrl = authDialogUrl,
                 onDismiss = viewModel::closeInAppGoogleLogin
             )
         }

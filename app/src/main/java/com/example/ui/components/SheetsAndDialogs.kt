@@ -466,6 +466,8 @@ fun NotificationsBottomSheet(
 @Composable
 fun InAppGoogleLoginDialog(
     authSession: GeckoSession,
+    title: String = "Google Sign-In (Synced Session)",
+    targetUrl: String = GeckoEngineManager.GOOGLE_LOGIN_URL,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -476,7 +478,7 @@ fun InAppGoogleLoginDialog(
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.86f),
+                .fillMaxHeight(0.88f),
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -491,29 +493,41 @@ fun InAppGoogleLoginDialog(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
+                        modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Filled.Lock, contentDescription = null, tint = ElectricMint, modifier = Modifier.size(18.dp))
                         Column {
-                            Text("Google Sign-In (Synced Session)", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "Shares login cookies with YouTube & YT Studio",
+                                text = title,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "Shares login cookies with YouTube, Studio & extensions",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = onDismiss) {
+                            Text("Done", color = ElectricMint)
+                        }
                         IconButton(
                             onClick = {
+                                val launchUrl = targetUrl.ifBlank { GeckoEngineManager.GOOGLE_LOGIN_URL }
                                 runCatching {
                                     CustomTabsIntent.Builder().build()
-                                        .launchUrl(context, Uri.parse(GeckoEngineManager.GOOGLE_LOGIN_URL))
+                                        .launchUrl(context, Uri.parse(launchUrl))
                                 }.onFailure {
                                     runCatching {
                                         context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(GeckoEngineManager.GOOGLE_LOGIN_URL))
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(launchUrl))
                                         )
                                     }
                                 }

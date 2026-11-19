@@ -3,8 +3,8 @@
   "author": "Tamal Mitra",
   "repository": "https://github.com/Imanagnator/YTube-Studio",
   "application_id": "com.tamalmitra.ytubestudio",
-  "current_version": "1.0.2",
-  "version_code": 3,
+  "current_version": "1.0.3",
+  "version_code": 4,
   "policy": "Never remove or disable any locked feature without explicit approval from Tamal Mitra.",
   "locked_features": [
     {
@@ -92,6 +92,7 @@
   "intentionally_removed_features": [
     "floating_download_pill",
     "network_speed_meter",
+    "studio_zoom_selector",
     "gemini_api_placeholders"
   ]
 }
