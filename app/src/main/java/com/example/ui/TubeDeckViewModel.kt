@@ -235,6 +235,8 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
             updateUBlockOriginFromGitHub(silent = true)
+            delay(5_000L)
+            downloadManager.updateYtDlpEngine(silent = true)
         }
     }
 

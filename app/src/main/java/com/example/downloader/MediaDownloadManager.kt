@@ -29,7 +29,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+private data class ExtractionStrategy(
+    val label: String,
+    val playerClients: String,
+    val useCookies: Boolean
+)
 
 class MediaDownloadManager(
     private val context: Context,
@@ -39,8 +46,10 @@ class MediaDownloadManager(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val initMutex = Mutex()
+    private val updateMutex = Mutex()
     private val activeDownloadCount = AtomicInteger(0)
     private val cancelledIds = ConcurrentHashMap.newKeySet<Long>()
+    private val autoUpdatedThisSession = AtomicBoolean(false)
 
     @Volatile
     private var initialized = false
@@ -53,6 +62,32 @@ class MediaDownloadManager(
 
     companion object {
         private const val TAG = "MediaDownloadManager"
+        private val VIDEO_ID_REGEX = Regex(
+            "(?:youtube\\.com/(?:watch\\?(?:.*&)?v=|shorts/|live/|embed/)|youtu\\.be/)([A-Za-z0-9_-]{11})"
+        )
+
+        fun normalizeYouTubeUrl(rawUrl: String): String {
+            val trimmed = rawUrl.trim()
+            val match = VIDEO_ID_REGEX.find(trimmed)
+            val videoId = match?.groupValues?.getOrNull(1)
+            return if (!videoId.isNullOrBlank()) {
+                "https://www.youtube.com/watch?v=$videoId"
+            } else {
+                trimmed
+            }
+        }
+
+        fun extractCleanError(error: Throwable?): String {
+            val raw = error?.message?.trim().orEmpty()
+            if (raw.isBlank()) return "Download failed — tap Update Engine in Shield & App"
+            val errorLine = raw.lineSequence()
+                .map { it.trim() }
+                .lastOrNull { it.startsWith("ERROR:", ignoreCase = true) }
+            val cleaned = (errorLine ?: raw.lineSequence().firstOrNull { it.isNotBlank() } ?: raw)
+                .removePrefix("ERROR:")
+                .trim()
+            return cleaned.take(200)
+        }
     }
 
     suspend fun ensureInitialized(): Result<Unit> = withContext(Dispatchers.IO) {
@@ -61,7 +96,8 @@ class MediaDownloadManager(
             if (initialized) return@withLock Result.success(Unit)
             runCatching {
                 YoutubeDL.getInstance().init(context.applicationContext)
-                FFmpeg.getInstance().init(context.applicationContext)
+                runCatching { FFmpeg.getInstance().init(context.applicationContext) }
+                    .onFailure { Log.w(TAG, "FFmpeg init warning (non-fatal for direct streams)", it) }
                 initialized = true
                 val ver = runCatching { YoutubeDL.getInstance().version(context.applicationContext) }
                     .getOrNull()
@@ -76,6 +112,11 @@ class MediaDownloadManager(
 
     private fun prepareCookiesFile(cookiesTxt: String?): File? {
         if (cookiesTxt.isNullOrBlank()) return null
+        val hasValidCookieLines = cookiesTxt.lineSequence().any {
+            val line = it.trim()
+            line.isNotEmpty() && !line.startsWith("#") && line.contains('\t')
+        }
+        if (!hasValidCookieLines) return null
         return runCatching {
             val file = File(context.cacheDir, "yt_session_cookies.txt")
             file.writeText(cookiesTxt)
@@ -83,38 +124,114 @@ class MediaDownloadManager(
         }.getOrNull()
     }
 
+    private fun buildStrategies(hasCookies: Boolean): List<ExtractionStrategy> = buildList {
+        // 1. Android VR + Mobile Web + TV clients bypass YouTube's Deno/JS-runtime requirement
+        add(ExtractionStrategy("android_vr/mweb/tv", "android_vr,mweb,tv", useCookies = false))
+        // 2. Authenticated Mobile/TV/Web-Embedded when signed in (for age-gated / bot-checked videos)
+        if (hasCookies) {
+            add(ExtractionStrategy("cookies+mweb/tv", "mweb,tv,web_embedded", useCookies = true))
+        }
+        // 3. iOS + Android + Web Embedded clean fallback
+        add(ExtractionStrategy("ios/android/web_embedded", "ios,android,web_embedded", useCookies = false))
+        // 4. Default yt-dlp client negotiation (benefits from latest nightly updates)
+        add(ExtractionStrategy("default", "default,-web_creator", useCookies = hasCookies))
+    }
+
+    private fun applyCommonOptions(
+        request: YoutubeDLRequest,
+        strategy: ExtractionStrategy,
+        cookiesFile: File?
+    ) {
+        request.addOption("--no-playlist")
+        request.addOption("--no-check-certificates")
+        request.addOption("--force-ipv4")
+        request.addOption("--geo-bypass")
+        request.addOption("--socket-timeout", "20")
+        request.addOption("--retries", "3")
+        request.addOption("--fragment-retries", "3")
+        request.addOption("--extractor-args", "youtube:player_client=${strategy.playerClients}")
+        if (strategy.useCookies && cookiesFile != null && cookiesFile.exists()) {
+            request.addOption("--cookies", cookiesFile.absolutePath)
+        }
+    }
+
+    private suspend fun trySelfHealUpdateOnce(): Boolean {
+        if (!autoUpdatedThisSession.compareAndSet(false, true)) return false
+        return updateMutex.withLock {
+            runCatching {
+                Log.i(TAG, "yt-dlp extraction failed; attempting automatic nightly engine update...")
+                val status = runCatching {
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        context.applicationContext,
+                        YoutubeDL.UpdateChannel._NIGHTLY
+                    )
+                }.getOrElse {
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        context.applicationContext,
+                        YoutubeDL.UpdateChannel._STABLE
+                    )
+                }
+                val ver = YoutubeDL.getInstance().version(context.applicationContext)
+                if (!ver.isNullOrBlank()) {
+                    prefsRepo.setYtDlpVersion(ver)
+                }
+                status == YoutubeDL.UpdateStatus.DONE
+            }.getOrDefault(false)
+        }
+    }
+
     suspend fun probeVideoInfo(url: String, cookiesTxt: String? = null): Result<VideoMetadataPreview> = withContext(Dispatchers.IO) {
         val initRes = ensureInitialized()
         if (initRes.isFailure) {
             return@withContext Result.failure(
-                initRes.exceptionOrNull() ?: IllegalStateException("Download engine failed to initialize")
+                IllegalStateException(extractCleanError(initRes.exceptionOrNull()))
             )
         }
-        runCatching {
-            val cookiesFile = prepareCookiesFile(cookiesTxt)
-            val info = if (cookiesFile != null && cookiesFile.exists()) {
-                val req = YoutubeDLRequest(url).apply {
-                    addOption("--cookies", cookiesFile.absolutePath)
-                }
-                YoutubeDL.getInstance().getInfo(req)
-            } else {
-                YoutubeDL.getInstance().getInfo(url)
-            }
-            val heights = info.formats
-                ?.mapNotNull { it.height.takeIf { h -> h > 0 } }
-                ?.distinct()
-                ?.sortedDescending()
-                ?: listOf(1080, 720, 480, 360)
 
-            VideoMetadataPreview(
-                url = url,
-                title = info.title ?: "YouTube Video",
-                uploader = info.uploader ?: "YouTube Creator",
-                durationSeconds = info.duration.toLong().coerceAtLeast(0L),
-                thumbnailUrl = info.thumbnail,
-                availableHeights = heights.ifEmpty { listOf(1080, 720, 480, 360) }
-            )
+        val cleanUrl = normalizeYouTubeUrl(url)
+        val cookiesFile = prepareCookiesFile(cookiesTxt)
+        val strategies = buildStrategies(hasCookies = cookiesFile != null)
+
+        suspend fun runProbeStrategies(): Result<VideoMetadataPreview> {
+            var lastError: Throwable? = null
+            for (strategy in strategies) {
+                val attempt = runCatching {
+                    val req = YoutubeDLRequest(cleanUrl).apply {
+                        applyCommonOptions(this, strategy, cookiesFile)
+                    }
+                    val info = YoutubeDL.getInstance().getInfo(req)
+                    val heights = info.formats
+                        ?.mapNotNull { it.height.takeIf { h -> h > 0 } }
+                        ?.distinct()
+                        ?.sortedDescending()
+                        ?: listOf(1080, 720, 480, 360)
+
+                    VideoMetadataPreview(
+                        url = cleanUrl,
+                        title = info.title ?: "YouTube Video",
+                        uploader = info.uploader ?: "YouTube Creator",
+                        durationSeconds = info.duration.toLong().coerceAtLeast(0L),
+                        thumbnailUrl = info.thumbnail,
+                        availableHeights = heights.ifEmpty { listOf(1080, 720, 480, 360) }
+                    )
+                }
+                if (attempt.isSuccess) return attempt
+                lastError = attempt.exceptionOrNull()
+                Log.w(TAG, "Probe strategy [${strategy.label}] failed: ${extractCleanError(lastError)}")
+            }
+            return Result.failure(IllegalStateException(extractCleanError(lastError)))
         }
+
+        val firstPass = runProbeStrategies()
+        if (firstPass.isSuccess) return@withContext firstPass
+
+        // Self-heal: auto-update yt-dlp to latest nightly once and retry cleanly
+        if (trySelfHealUpdateOnce()) {
+            val secondPass = runProbeStrategies()
+            if (secondPass.isSuccess) return@withContext secondPass
+            return@withContext secondPass
+        }
+        firstPass
     }
 
     fun enqueueDownload(
@@ -125,6 +242,7 @@ class MediaDownloadManager(
         cookiesTxt: String? = null
     ) {
         scope.launch {
+            val cleanUrl = normalizeYouTubeUrl(url)
             val category = if (formatOption.isAudioOnly) MediaCategory.AUDIO else MediaCategory.VIDEO
             val cleanTitle = (titleOverride?.takeIf { it.isNotBlank() } ?: "YouTube Media")
                 .replace(Regex("[\\\\/:*?\"<>|]"), "_")
@@ -133,7 +251,7 @@ class MediaDownloadManager(
             val recordId = downloadDao.insert(
                 DownloadRecord(
                     title = cleanTitle,
-                    sourceUrl = url,
+                    sourceUrl = cleanUrl,
                     formatLabel = formatOption.label,
                     extension = formatOption.extension,
                     category = category,
@@ -155,7 +273,7 @@ class MediaDownloadManager(
 
             val initRes = ensureInitialized()
             if (initRes.isFailure) {
-                val msg = initRes.exceptionOrNull()?.message ?: "Engine init failed"
+                val msg = extractCleanError(initRes.exceptionOrNull())
                 downloadDao.markFailed(recordId, DownloadStatus.FAILED, msg)
                 notificationManager.cancelDownloadNotification(recordId)
                 notificationManager.logAndNotify(
@@ -175,78 +293,112 @@ class MediaDownloadManager(
                 notificationManager.postDownloadProgress(recordId, cleanTitle, 0, indeterminate = true)
 
                 val cookiesFile = prepareCookiesFile(cookiesTxt)
-                val request = YoutubeDLRequest(url).apply {
-                    addOption("--no-playlist")
-                    addOption("--no-mtime")
-                    if (cookiesFile != null && cookiesFile.exists()) {
-                        addOption("--cookies", cookiesFile.absolutePath)
-                    }
-                    addOption("-o", "${workDir.absolutePath}/%(title).70s.%(ext)s")
+                val strategies = buildStrategies(hasCookies = cookiesFile != null)
 
-                    when (formatOption) {
-                        DownloadFormatOption.MP3_320 -> {
-                            addOption("-x")
-                            addOption("--audio-format", "mp3")
-                            addOption("--audio-quality", "320K")
-                            addOption("--embed-thumbnail")
-                            addOption("--add-metadata")
-                        }
-                        DownloadFormatOption.MP3_192 -> {
-                            addOption("-x")
-                            addOption("--audio-format", "mp3")
-                            addOption("--audio-quality", "192K")
-                            addOption("--add-metadata")
-                        }
-                        DownloadFormatOption.M4A_BEST -> {
-                            addOption("-x")
-                            addOption("--audio-format", "m4a")
-                            addOption("--audio-quality", "0")
-                            addOption("--add-metadata")
-                        }
-                        DownloadFormatOption.OPUS_BEST -> {
-                            addOption("-x")
-                            addOption("--audio-format", "opus")
-                            addOption("--audio-quality", "0")
-                        }
-                        DownloadFormatOption.FLAC_BEST -> {
-                            addOption("-x")
-                            addOption("--audio-format", "flac")
-                        }
-                        DownloadFormatOption.MP4_2160 -> {
-                            addOption("-f", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best")
-                            addOption("--merge-output-format", "mp4")
-                        }
-                        DownloadFormatOption.MP4_1080 -> {
-                            addOption("-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best")
-                            addOption("--merge-output-format", "mp4")
-                        }
-                        DownloadFormatOption.MP4_720 -> {
-                            addOption("-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best")
-                            addOption("--merge-output-format", "mp4")
-                        }
-                        DownloadFormatOption.MP4_480 -> {
-                            addOption("-f", "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best")
-                            addOption("--merge-output-format", "mp4")
-                        }
-                        DownloadFormatOption.MP4_360 -> {
-                            addOption("-f", "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best")
-                            addOption("--merge-output-format", "mp4")
+                fun buildDownloadRequest(strategy: ExtractionStrategy): YoutubeDLRequest {
+                    return YoutubeDLRequest(cleanUrl).apply {
+                        applyCommonOptions(this, strategy, cookiesFile)
+                        addOption("--no-mtime")
+                        addOption("--no-part")
+                        addOption("-o", "${workDir.absolutePath}/%(title).70s.%(ext)s")
+
+                        when (formatOption) {
+                            DownloadFormatOption.MP3_320 -> {
+                                addOption("-f", "bestaudio/best")
+                                addOption("-x")
+                                addOption("--audio-format", "mp3")
+                                addOption("--audio-quality", "320K")
+                                addOption("--add-metadata")
+                            }
+                            DownloadFormatOption.MP3_192 -> {
+                                addOption("-f", "bestaudio/best")
+                                addOption("-x")
+                                addOption("--audio-format", "mp3")
+                                addOption("--audio-quality", "192K")
+                                addOption("--add-metadata")
+                            }
+                            DownloadFormatOption.M4A_BEST -> {
+                                addOption("-f", "bestaudio[ext=m4a]/bestaudio/best")
+                                addOption("-x")
+                                addOption("--audio-format", "m4a")
+                                addOption("--audio-quality", "0")
+                                addOption("--add-metadata")
+                            }
+                            DownloadFormatOption.OPUS_BEST -> {
+                                addOption("-f", "bestaudio[ext=webm]/bestaudio/best")
+                                addOption("-x")
+                                addOption("--audio-format", "opus")
+                                addOption("--audio-quality", "0")
+                            }
+                            DownloadFormatOption.FLAC_BEST -> {
+                                addOption("-f", "bestaudio/best")
+                                addOption("-x")
+                                addOption("--audio-format", "flac")
+                            }
+                            DownloadFormatOption.MP4_2160 -> {
+                                addOption("-f", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best")
+                                addOption("--merge-output-format", "mp4")
+                            }
+                            DownloadFormatOption.MP4_1080 -> {
+                                addOption("-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best")
+                                addOption("--merge-output-format", "mp4")
+                            }
+                            DownloadFormatOption.MP4_720 -> {
+                                addOption("-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best")
+                                addOption("--merge-output-format", "mp4")
+                            }
+                            DownloadFormatOption.MP4_480 -> {
+                                addOption("-f", "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best")
+                                addOption("--merge-output-format", "mp4")
+                            }
+                            DownloadFormatOption.MP4_360 -> {
+                                addOption("-f", "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best")
+                                addOption("--merge-output-format", "mp4")
+                            }
                         }
                     }
                 }
 
-                var lastNotifiedPct = -5
-                YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, _ ->
-                    val pct = progress.toInt().coerceIn(0, 100)
-                    val status = if (pct >= 99) DownloadStatus.PROCESSING else DownloadStatus.DOWNLOADING
-                    scope.launch {
-                        downloadDao.updateProgress(recordId, status, pct, etaInSeconds)
+                suspend fun runDownloadPass(): Throwable? {
+                    var lastErr: Throwable? = null
+                    for (strategy in strategies) {
+                        if (cancelledIds.contains(recordId)) return IllegalStateException("Cancelled")
+                        workDir.listFiles()?.forEach { it.deleteRecursively() }
+                        var lastNotifiedPct = -5
+                        val attempt = runCatching {
+                            val req = buildDownloadRequest(strategy)
+                            YoutubeDL.getInstance().execute(req, processId) { progress, etaInSeconds, _ ->
+                                val pct = progress.toInt().coerceIn(0, 100)
+                                val status = if (pct >= 99) DownloadStatus.PROCESSING else DownloadStatus.DOWNLOADING
+                                scope.launch {
+                                    downloadDao.updateProgress(recordId, status, pct, etaInSeconds)
+                                }
+                                if (pct - lastNotifiedPct >= 5 || pct == 100) {
+                                    lastNotifiedPct = pct
+                                    notificationManager.postDownloadProgress(recordId, cleanTitle, pct, indeterminate = false)
+                                }
+                            }
+                        }
+                        if (attempt.isSuccess) {
+                            val hasFile = workDir.listFiles()?.any { it.isFile && it.length() > 0L } == true
+                            if (hasFile) return null
+                            lastErr = IllegalStateException("Downloaded file was empty")
+                        } else {
+                            lastErr = attempt.exceptionOrNull()
+                            if (cancelledIds.contains(recordId)) return lastErr
+                            Log.w(TAG, "Download strategy [${strategy.label}] failed: ${extractCleanError(lastErr)}")
+                        }
                     }
-                    if (pct - lastNotifiedPct >= 5 || pct == 100) {
-                        lastNotifiedPct = pct
-                        notificationManager.postDownloadProgress(recordId, cleanTitle, pct, indeterminate = false)
+                    return lastErr
+                }
+
+                var failure = runDownloadPass()
+                if (failure != null && !cancelledIds.contains(recordId)) {
+                    if (trySelfHealUpdateOnce()) {
+                        failure = runDownloadPass()
                     }
                 }
+                if (failure != null) throw failure
 
                 val outputFile = workDir.listFiles()
                     ?.filter { it.isFile && it.length() > 0L }
@@ -288,16 +440,17 @@ class MediaDownloadManager(
                     )
                     notificationManager.cancelDownloadNotification(recordId)
                 } else {
-                    Log.e(TAG, "Download error", e)
+                    val cleanErr = extractCleanError(e)
+                    Log.e(TAG, "Download error: $cleanErr", e)
                     downloadDao.markFailed(
                         id = recordId,
                         status = DownloadStatus.FAILED,
-                        error = e.message ?: "Download failed"
+                        error = cleanErr
                     )
                     notificationManager.cancelDownloadNotification(recordId)
                     notificationManager.logAndNotify(
                         title = "Download failed",
-                        message = "$cleanTitle: ${e.message ?: "Unknown error"}",
+                        message = "$cleanTitle: $cleanErr",
                         category = NotificationCategory.DOWNLOAD
                     )
                 }
@@ -330,31 +483,44 @@ class MediaDownloadManager(
         downloadDao.deleteById(record.id)
     }
 
-    suspend fun updateYtDlpEngine(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun updateYtDlpEngine(silent: Boolean = false): Result<String> = withContext(Dispatchers.IO) {
         val initRes = ensureInitialized()
         if (initRes.isFailure) {
             return@withContext Result.failure(
                 initRes.exceptionOrNull() ?: IllegalStateException("Engine init failed")
             )
         }
-        runCatching {
-            val status = YoutubeDL.getInstance().updateYoutubeDL(
-                context.applicationContext,
-                YoutubeDL.UpdateChannel._STABLE
-            )
-            val version = YoutubeDL.getInstance().version(context.applicationContext) ?: "Latest"
-            prefsRepo.setYtDlpVersion(version)
-            val message = when (status) {
-                YoutubeDL.UpdateStatus.DONE -> "Updated yt-dlp engine to $version"
-                YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp engine is up to date ($version)"
-                else -> "yt-dlp status: $version"
+        updateMutex.withLock {
+            runCatching {
+                val status = runCatching {
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        context.applicationContext,
+                        YoutubeDL.UpdateChannel._NIGHTLY
+                    )
+                }.getOrElse {
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        context.applicationContext,
+                        YoutubeDL.UpdateChannel._STABLE
+                    )
+                }
+                val version = YoutubeDL.getInstance().version(context.applicationContext) ?: "Latest"
+                prefsRepo.setYtDlpVersion(version)
+                autoUpdatedThisSession.set(true)
+                val message = when (status) {
+                    YoutubeDL.UpdateStatus.DONE -> "Updated yt-dlp nightly engine to $version"
+                    YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp engine is up to date ($version)"
+                    else -> "yt-dlp status: $version"
+                }
+                if (!silent || status == YoutubeDL.UpdateStatus.DONE) {
+                    notificationManager.logAndNotify(
+                        title = "Downloader Engine",
+                        message = message,
+                        category = NotificationCategory.SYSTEM,
+                        postSystemNotification = !silent
+                    )
+                }
+                message
             }
-            notificationManager.logAndNotify(
-                title = "Downloader Engine",
-                message = message,
-                category = NotificationCategory.SYSTEM
-            )
-            message
         }
     }
 
