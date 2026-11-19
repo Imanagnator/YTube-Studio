@@ -35,6 +35,9 @@ import com.example.gecko.BrowserTabState
 import com.example.gecko.GeckoEngineManager
 import com.example.gecko.GeckoEvent
 import com.example.gecko.LiveQualityState
+import com.example.gecko.ManagedExtensionSpec
+import com.example.gecko.ManagedExtensionState
+import com.example.gecko.ManagedExtensionsCatalog
 import com.example.gecko.UBlockOriginUpdater
 import com.example.gecko.UBlockStatus
 import com.example.network.DnsAndSpeedEngine
@@ -81,6 +84,7 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
 
     val isEngineReady: StateFlow<Boolean> = geckoEngine.isEngineReady
     val uBlockState: StateFlow<UBlockStatus> = geckoEngine.uBlockState
+    val managedExtensions: StateFlow<List<ManagedExtensionState>> = geckoEngine.managedExtensions
     val isFullScreen: StateFlow<Boolean> = geckoEngine.isFullScreen
     val liveQualityState: StateFlow<LiveQualityState> = geckoEngine.liveQualityState
     val streamState: StateFlow<BrowserTabState> = geckoEngine.streamState
@@ -151,6 +155,9 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
 
     private val _isUpdatingYtDlp = MutableStateFlow(false)
     val isUpdatingYtDlp: StateFlow<Boolean> = _isUpdatingYtDlp.asStateFlow()
+
+    private val _isUpdatingAllExtensions = MutableStateFlow(false)
+    val isUpdatingAllExtensions: StateFlow<Boolean> = _isUpdatingAllExtensions.asStateFlow()
 
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val snackbarEvents = _snackbarEvents.asSharedFlow()
@@ -225,18 +232,31 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
 
     private fun scheduleAutoExtensionUpdate() {
         viewModelScope.launch {
-            // Wait 12 seconds after launch so YouTube home & video stream get full bandwidth first
-            delay(12_000L)
+            // Wait 8 seconds after launch so YouTube home & video stream get full bandwidth first
+            delay(8_000L)
             val prefs = prefsRepo.prefsFlow.first()
+            geckoEngine.applyDisabledExtensionIds(prefs.disabledExtensionIds)
+
+            // 1. Always auto-install any enabled extension that isn't installed yet in GeckoView
+            val rt = geckoRuntime
+            if (rt != null) {
+                val missingSpecs = managedExtensions.value
+                    .filter { !it.isInstalled && !prefs.disabledExtensionIds.contains(it.spec.id) }
+                    .map { it.spec }
+                for (spec in missingSpecs) {
+                    installOrUpdateSingleExtensionInternal(rt, spec, silent = true, forceInstallIfMissing = true)
+                    delay(1_200L)
+                }
+            }
+
+            // 2. Full 24h automatic update check for ALL 7 extensions + yt-dlp nightly engine
             if (!prefs.autoUpdateExtensions) return@launch
             val now = System.currentTimeMillis()
             val twentyFourHoursMs = 24L * 60L * 60L * 1000L
             if (prefs.lastExtensionCheckMs > 0L && (now - prefs.lastExtensionCheckMs) < twentyFourHoursMs) {
                 return@launch
             }
-            updateUBlockOriginFromGitHub(silent = true)
-            delay(5_000L)
-            downloadManager.updateYtDlpEngine(silent = true)
+            updateAllExtensionsAndEngines(silent = true)
         }
     }
 
@@ -244,6 +264,7 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val prefs = prefsRepo.prefsFlow.first()
             geckoEngine.applyDohSettings(prefs.activeDohUrl)
+            geckoEngine.applyDisabledExtensionIds(prefs.disabledExtensionIds)
             geckoEngine.updateExtensionSettings(
                 adBlockEnabled = prefs.adBlockEnabled,
                 backgroundAudioEnabled = prefs.backgroundAudioEnabled,
@@ -758,13 +779,183 @@ class TubeDeckViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             prefsRepo.setAutoUpdateExtensions(enabled)
             _snackbarEvents.tryEmit(
-                if (enabled) "Auto-update for uBlock Origin enabled"
-                else "Auto-update for uBlock Origin paused"
+                if (enabled) "Auto-update enabled for all extensions & yt-dlp"
+                else "Auto-update paused"
             )
             if (enabled) {
-                updateUBlockOriginFromGitHub(silent = true)
+                updateAllExtensionsAndEngines(silent = true)
             }
         }
+    }
+
+    fun toggleManagedExtension(extensionId: String, enabled: Boolean) {
+        if (extensionId == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            toggleAdBlock(enabled)
+            return
+        }
+        viewModelScope.launch {
+            prefsRepo.setExtensionEnabled(extensionId, enabled)
+            geckoEngine.setManagedExtensionEnabled(extensionId, enabled)
+            val spec = ManagedExtensionsCatalog.findById(extensionId) ?: return@launch
+            val currentState = managedExtensions.value.firstOrNull { it.spec.id == extensionId }
+            if (enabled && currentState?.isInstalled != true) {
+                val rt = geckoRuntime ?: return@launch
+                installOrUpdateSingleExtensionInternal(rt, spec, silent = false, forceInstallIfMissing = true)
+            } else {
+                _snackbarEvents.tryEmit(
+                    if (enabled) "${spec.name} enabled" else "${spec.name} paused"
+                )
+            }
+        }
+    }
+
+    fun updateSingleExtension(extensionId: String) {
+        val rt = geckoRuntime ?: return
+        val spec = ManagedExtensionsCatalog.findById(extensionId) ?: return
+        viewModelScope.launch {
+            installOrUpdateSingleExtensionInternal(rt, spec, silent = false, forceInstallIfMissing = true)
+        }
+    }
+
+    fun updateAllExtensionsAndEngines(silent: Boolean = false) {
+        if (_isUpdatingAllExtensions.value) return
+        val rt = geckoRuntime ?: return
+        viewModelScope.launch {
+            _isUpdatingAllExtensions.value = true
+            var updatedCount = 0
+            try {
+                val disabledIds = userPrefs.value.disabledExtensionIds
+                for (spec in ManagedExtensionsCatalog.ALL_SPECS) {
+                    val isEnabled = if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                        userPrefs.value.adBlockEnabled
+                    } else {
+                        !disabledIds.contains(spec.id)
+                    }
+                    if (!isEnabled && managedExtensions.value.firstOrNull { it.spec.id == spec.id }?.isInstalled != true) {
+                        continue
+                    }
+                    val didUpdate = installOrUpdateSingleExtensionInternal(
+                        rt = rt,
+                        spec = spec,
+                        silent = true,
+                        forceInstallIfMissing = isEnabled
+                    )
+                    if (didUpdate) updatedCount++
+                }
+                prefsRepo.setLastExtensionCheckMs(System.currentTimeMillis())
+
+                // Also update yt-dlp nightly engine cleanly
+                val ytdlpRes = downloadManager.updateYtDlpEngine(silent = silent)
+                val ytdlpUpdated = ytdlpRes.getOrNull()?.startsWith("Updated", ignoreCase = true) == true
+                if (ytdlpUpdated) updatedCount++
+
+                if (!silent) {
+                    val msg = if (updatedCount > 0) {
+                        "Updated $updatedCount extension/engine component(s)"
+                    } else {
+                        "All 7 extensions & yt-dlp engine are up to date"
+                    }
+                    _snackbarEvents.tryEmit(msg)
+                } else if (updatedCount > 0) {
+                    notificationManager.logAndNotify(
+                        title = "Auto-Update Complete",
+                        message = "Updated $updatedCount extension/engine package(s) automatically.",
+                        category = NotificationCategory.SYSTEM,
+                        postSystemNotification = false
+                    )
+                }
+            } finally {
+                _isUpdatingAllExtensions.value = false
+            }
+        }
+    }
+
+    private suspend fun installOrUpdateSingleExtensionInternal(
+        rt: GeckoRuntime,
+        spec: ManagedExtensionSpec,
+        silent: Boolean,
+        forceInstallIfMissing: Boolean
+    ): Boolean {
+        val currentState = managedExtensions.value.firstOrNull { it.spec.id == spec.id }
+        if (currentState?.isUpdating == true) return false
+        val alreadyInstalled = currentState?.isInstalled == true
+        if (!alreadyInstalled && !forceInstallIfMissing) return false
+
+        geckoEngine.setManagedExtensionUpdating(
+            spec.id,
+            true,
+            if (alreadyInstalled) "Checking latest ${spec.name}..." else "Fetching ${spec.name} from Mozilla AMO..."
+        )
+
+        val releaseRes = geckoEngine.extensionUpdater.fetchLatestRelease(spec)
+        if (releaseRes.isFailure) {
+            val msg = releaseRes.exceptionOrNull()?.message ?: "Update check failed"
+            geckoEngine.setManagedExtensionUpdating(
+                spec.id,
+                false,
+                if (alreadyInstalled) "v${currentState?.version} active" else "Check failed: $msg"
+            )
+            if (!silent) _snackbarEvents.tryEmit("${spec.name} check failed: $msg")
+            return false
+        }
+
+        val release = releaseRes.getOrThrow()
+        val currentVer = currentState?.version.orEmpty()
+        val needsInstall = !alreadyInstalled || UBlockOriginUpdater.isNewerVersion(release.version, currentVer)
+        if (!needsInstall) {
+            geckoEngine.setManagedExtensionUpdating(spec.id, false, "v$currentVer up to date (${release.sourceLabel})")
+            if (!silent) _snackbarEvents.tryEmit("${spec.name} v$currentVer is already latest")
+            return false
+        }
+
+        geckoEngine.setManagedExtensionUpdating(spec.id, true, "Downloading v${release.version}...")
+        val xpiRes = geckoEngine.extensionUpdater.downloadXpi(spec, release)
+        if (xpiRes.isFailure) {
+            val msg = xpiRes.exceptionOrNull()?.message ?: "Download failed"
+            geckoEngine.setManagedExtensionUpdating(
+                spec.id,
+                false,
+                if (alreadyInstalled) "v$currentVer active" else "Download failed: $msg"
+            )
+            if (!silent) _snackbarEvents.tryEmit("${spec.name} download failed: $msg")
+            return false
+        }
+
+        val xpiFile = xpiRes.getOrThrow()
+        geckoEngine.setManagedExtensionUpdating(spec.id, true, "Installing v${release.version}...")
+        val enableAfter = if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            userPrefs.value.adBlockEnabled
+        } else {
+            !userPrefs.value.disabledExtensionIds.contains(spec.id)
+        }
+
+        val installDeferred = kotlinx.coroutines.CompletableDeferred<Result<String>>()
+        geckoEngine.installManagedExtensionFromXpi(
+            rt = rt,
+            spec = spec,
+            xpiFile = xpiFile,
+            expectedVersion = release.version,
+            enableAfterInstall = enableAfter
+        ) { res ->
+            installDeferred.complete(res)
+        }
+
+        val installRes = installDeferred.await()
+        return installRes.fold(
+            onSuccess = { installedVer ->
+                if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                    prefsRepo.setUBlockVersion(installedVer)
+                }
+                if (!silent) {
+                    _snackbarEvents.tryEmit("${spec.name} updated to v$installedVer")
+                }
+                true
+            },
+            onFailure = { err ->
+                if (!silent) _snackbarEvents.tryEmit("${spec.name} install error: ${err.message}")
+                false
+            }
+        )
     }
 
     fun clearBrowserSessions() {

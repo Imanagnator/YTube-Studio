@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoMode
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -89,10 +88,12 @@ import com.example.data.model.DnsProvider
 import com.example.data.model.QualityOption
 import com.example.data.model.RecordingState
 import com.example.gecko.GeckoEngineManager
+import com.example.gecko.ManagedExtensionState
 import com.example.gecko.UBlockStatus
 import com.example.network.DynamicDnsStatus
 import com.example.ui.components.AddCustomDnsDialog
 import com.example.ui.components.EnhancedDownloadItemCard
+import com.example.ui.components.ExtensionsHubCard
 import com.example.ui.components.OfflineMediaPlayerCard
 import com.example.ui.components.ScreenRecorderQuickCard
 import com.example.ui.theme.CyanTelemetry
@@ -119,6 +120,8 @@ fun ProfileScreen(
     downloads: List<DownloadRecord>,
     recordingState: RecordingState,
     uBlockStatus: UBlockStatus,
+    managedExtensions: List<ManagedExtensionState>,
+    isUpdatingAllExtensions: Boolean,
     isUpdatingYtDlp: Boolean,
     hasNotificationPermission: Boolean,
     onRequestNotificationPermission: () -> Unit,
@@ -149,7 +152,9 @@ fun ProfileScreen(
     onStartOrStopRecording: (resolution1080p: Boolean, withMic: Boolean) -> Unit,
     onToggleAdBlock: (Boolean) -> Unit,
     onToggleAutoUpdateExtensions: (Boolean) -> Unit,
-    onUpdateUBlockFromGitHub: () -> Unit,
+    onUpdateAllExtensions: () -> Unit,
+    onToggleManagedExtension: (String, Boolean) -> Unit,
+    onUpdateSingleExtension: (String) -> Unit,
     onToggleBackgroundAudio: (Boolean) -> Unit,
     onSelectDefaultQuality: (QualityOption) -> Unit,
     onToggleDarkTheme: (Boolean) -> Unit,
@@ -191,8 +196,9 @@ fun ProfileScreen(
                             },
                             style = MaterialTheme.typography.headlineMedium
                         )
+                        val activeExtCount = managedExtensions.count { it.isInstalled && it.isEnabled }
                         Text(
-                            text = "${prefs.activeDnsName} • uBlock Origin v${uBlockStatus.version}",
+                            text = "${prefs.activeDnsName} • $activeExtCount/${managedExtensions.size} Extensions Active",
                             style = MaterialTheme.typography.labelMedium,
                             color = ElectricMint
                         )
@@ -843,15 +849,6 @@ fun ProfileScreen(
                                 )
 
                                 SettingToggleRow(
-                                    icon = Icons.Filled.AutoMode,
-                                    title = "Auto-Update Extensions",
-                                    subtitle = "Automatically check gorhill/uBlock GitHub releases every 24h",
-                                    checked = prefs.autoUpdateExtensions,
-                                    onCheckedChange = onToggleAutoUpdateExtensions,
-                                    tag = "setting_autoupdate_ext_switch"
-                                )
-
-                                SettingToggleRow(
                                     icon = Icons.Filled.Headphones,
                                     title = "Background Audio Playback",
                                     subtitle = "Keep YouTube audio playing with notification controls when minimized",
@@ -897,6 +894,19 @@ fun ProfileScreen(
                         }
                     }
 
+                    // Full Mozilla Extensions Hub & Auto-Updater
+                    item {
+                        ExtensionsHubCard(
+                            extensions = managedExtensions,
+                            autoUpdateEnabled = prefs.autoUpdateExtensions,
+                            isUpdatingAll = isUpdatingAllExtensions,
+                            onToggleAutoUpdate = onToggleAutoUpdateExtensions,
+                            onUpdateAllNow = onUpdateAllExtensions,
+                            onToggleExtension = onToggleManagedExtension,
+                            onUpdateSingleExtension = onUpdateSingleExtension
+                        )
+                    }
+
                     // yt-dlp Engine & Notification Permission Card
                     item {
                         Surface(
@@ -909,7 +919,7 @@ fun ProfileScreen(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text("Engine & System Permissions", style = MaterialTheme.typography.titleLarge)
+                                Text("Downloader Engine & Permissions", style = MaterialTheme.typography.titleLarge)
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -917,35 +927,7 @@ fun ProfileScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("uBlock Origin (gorhill/uBlock)", style = MaterialTheme.typography.titleSmall)
-                                        Text(
-                                            text = "v${uBlockStatus.version} • Signed Mozilla XPI",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = ElectricMint
-                                        )
-                                    }
-                                    OutlinedButton(
-                                        onClick = onUpdateUBlockFromGitHub,
-                                        enabled = !uBlockStatus.isUpdating,
-                                        modifier = Modifier.testTag("update_ublock_github_button")
-                                    ) {
-                                        if (uBlockStatus.isUpdating) {
-                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                        } else {
-                                            Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        }
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(if (uBlockStatus.isUpdating) "Updating..." else "GitHub Update")
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("yt-dlp + FFmpeg Extractor", style = MaterialTheme.typography.titleSmall)
+                                        Text("yt-dlp + FFmpeg Extractor (Nightly Auto-Update)", style = MaterialTheme.typography.titleSmall)
                                         Text(
                                             text = "Version: ${prefs.ytDlpVersion}",
                                             style = MaterialTheme.typography.labelSmall,
@@ -963,7 +945,7 @@ fun ProfileScreen(
                                             Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(16.dp))
                                         }
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text(if (isUpdatingYtDlp) "Updating..." else "Update Engine")
+                                        Text(if (isUpdatingYtDlp) "Updating..." else "Update Now")
                                     }
                                 }
 

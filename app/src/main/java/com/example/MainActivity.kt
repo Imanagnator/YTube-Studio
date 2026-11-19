@@ -142,6 +142,8 @@ fun TubeDeckAppRoot(
     val context = LocalContext.current
     val isEngineReady by viewModel.isEngineReady.collectAsStateWithLifecycle()
     val uBlockState by viewModel.uBlockState.collectAsStateWithLifecycle()
+    val managedExtensions by viewModel.managedExtensions.collectAsStateWithLifecycle()
+    val isUpdatingAllExtensions by viewModel.isUpdatingAllExtensions.collectAsStateWithLifecycle()
     val isFullScreen by viewModel.isFullScreen.collectAsStateWithLifecycle()
     val liveQualityState by viewModel.liveQualityState.collectAsStateWithLifecycle()
     val dynamicDnsStatus by viewModel.dynamicDnsStatus.collectAsStateWithLifecycle()
@@ -493,6 +495,8 @@ fun TubeDeckAppRoot(
                                     downloads = downloads,
                                     recordingState = recordingState,
                                     uBlockStatus = uBlockState,
+                                    managedExtensions = managedExtensions,
+                                    isUpdatingAllExtensions = isUpdatingAllExtensions,
                                     isUpdatingYtDlp = isUpdatingYtDlp,
                                     hasNotificationPermission = hasNotifPermission,
                                     onRequestNotificationPermission = {
@@ -529,7 +533,9 @@ fun TubeDeckAppRoot(
                                     },
                                     onToggleAdBlock = viewModel::toggleAdBlock,
                                     onToggleAutoUpdateExtensions = viewModel::toggleAutoUpdateExtensions,
-                                    onUpdateUBlockFromGitHub = { viewModel.updateUBlockOriginFromGitHub(silent = false) },
+                                    onUpdateAllExtensions = { viewModel.updateAllExtensionsAndEngines(silent = false) },
+                                    onToggleManagedExtension = viewModel::toggleManagedExtension,
+                                    onUpdateSingleExtension = viewModel::updateSingleExtension,
                                     onToggleBackgroundAudio = viewModel::toggleBackgroundAudio,
                                     onSelectDefaultQuality = viewModel::setPreferredQuality,
                                     onToggleDarkTheme = viewModel::toggleDarkTheme,

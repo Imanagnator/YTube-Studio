@@ -4,6 +4,23 @@ All notable changes to **YTube Studio** by **Tamal Mitra** are documented in thi
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-04-12
+
+### Added
+- **Full Mozilla Extensions Hub (7 Official Signed Extensions)**
+  - Added seamless installation, ON/OFF toggling, and semantic version tracking for **uBlock Origin**, **SponsorBlock**, **Return YouTube Dislike**, **DeArrow**, **YouTube NonStop**, **Enhancer for YouTube**, and **vidIQ Vision for YouTube Studio**.
+  - Added **ManagedExtensionUpdater** querying Mozilla Add-ons API v5 (`addons.mozilla.org`) and `gorhill/uBlock` GitHub Releases.
+- **Full Auto-Update for All Extensions + `yt-dlp` Nightly Engine**
+  - Background 24-hour auto-updater now installs/updates all 7 enabled Mozilla extensions **and** keeps the `yt-dlp` extraction engine updated to the latest nightly build automatically (plus one-tap **Update All** and per-extension refresh in **Shield & App**).
+- **Built-In YTube Studio Creator Toolkit**
+  - Added an unobtrusive floating creator bar on `studio.youtube.com` video edit pages with live SEO Title (`100` chars) & Description (`5000` chars) counters, 1-tap HD Thumbnail opener (`maxresdefault`), and 1-tap Tag Copier.
+
+### Fixed
+- **Release APK `yt-dlp` + `FFmpeg` Extraction & Download Reliability**
+  - Added `android:extractNativeLibs="true"` in `AndroidManifest.xml` so native Python/FFmpeg binaries extract properly on modern Android devices.
+  - Hardened `proguard-rules.pro` with explicit keep rules for `youtubedl-android`, Jackson annotations, `org.apache.commons`, and `org.tukaani` so R8 minification never breaks `yt-dlp` metadata parsing in Release APKs.
+  - Upgraded `MediaDownloadManager` with a 4-stage multi-client extraction fallback chain (`android_vr,mweb,tv` → `cookies + mweb,tv,web_embedded` → `ios,android,web_embedded` → `default`), canonical URL normalization, `--no-playlist`, and self-healing `yt-dlp` nightly retry.
+
 ## [1.0.0] - 2026-04-12
 
 ### Added

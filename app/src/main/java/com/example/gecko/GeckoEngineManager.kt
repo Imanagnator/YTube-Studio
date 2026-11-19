@@ -23,6 +23,7 @@ import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebRequestError
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class BrowserTabState(
     val currentUrl: String = "",
@@ -121,11 +122,14 @@ class GeckoEngineManager(private val context: Context) {
     }
 
     val uBlockUpdater = UBlockOriginUpdater(context.applicationContext)
+    val extensionUpdater = ManagedExtensionUpdater(context.applicationContext, uBlockUpdater)
 
     @Volatile
     private var runtime: GeckoRuntime? = null
     private var nativePort: WebExtension.Port? = null
     private var uBlockExtension: WebExtension? = null
+    private val installedExtensions = ConcurrentHashMap<String, WebExtension>()
+    private var disabledExtensionIdsCache: Set<String> = emptySet()
     private var pendingFileCallback: ((Array<Uri>?) -> Unit)? = null
 
     val streamSession: GeckoSession by lazy { createStreamSession() }
@@ -152,6 +156,11 @@ class GeckoEngineManager(private val context: Context) {
 
     private val _uBlockState = MutableStateFlow(UBlockStatus())
     val uBlockState: StateFlow<UBlockStatus> = _uBlockState.asStateFlow()
+
+    private val _managedExtensions = MutableStateFlow(
+        ManagedExtensionsCatalog.ALL_SPECS.map { ManagedExtensionState(it) }
+    )
+    val managedExtensions: StateFlow<List<ManagedExtensionState>> = _managedExtensions.asStateFlow()
 
     private val _isFullScreen = MutableStateFlow(false)
     val isFullScreen: StateFlow<Boolean> = _isFullScreen.asStateFlow()
@@ -238,12 +247,12 @@ class GeckoEngineManager(private val context: Context) {
                 origins: Array<out String>,
                 dataCollectionPermissions: Array<out String>
             ): GeckoResult<WebExtension.PermissionPromptResponse> {
-                val isUBlock = extension.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID
+                val isAllowed = ManagedExtensionsCatalog.ALL_EXTENSION_IDS.contains(extension.id)
                 return GeckoResult.fromValue(
                     WebExtension.PermissionPromptResponse(
-                        isUBlock, // isPermissionsGranted
-                        isUBlock, // isPrivateModeGranted
-                        false     // isTechnicalAndInteractionDataGranted
+                        isAllowed, // isPermissionsGranted
+                        isAllowed, // isPrivateModeGranted
+                        false      // isTechnicalAndInteractionDataGranted
                     )
                 )
             }
@@ -254,7 +263,7 @@ class GeckoEngineManager(private val context: Context) {
                 origins: Array<out String>,
                 dataCollectionPermissions: Array<out String>
             ): GeckoResult<AllowOrDeny> {
-                val decision = if (extension.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                val decision = if (ManagedExtensionsCatalog.ALL_EXTENSION_IDS.contains(extension.id)) {
                     AllowOrDeny.ALLOW
                 } else {
                     AllowOrDeny.DENY
@@ -268,7 +277,7 @@ class GeckoEngineManager(private val context: Context) {
                 origins: Array<out String>,
                 dataCollectionPermissions: Array<out String>
             ): GeckoResult<AllowOrDeny> {
-                val decision = if (extension.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                val decision = if (ManagedExtensionsCatalog.ALL_EXTENSION_IDS.contains(extension.id)) {
                     AllowOrDeny.ALLOW
                 } else {
                     AllowOrDeny.DENY
@@ -281,12 +290,34 @@ class GeckoEngineManager(private val context: Context) {
     private fun ensureUBlockOriginInstalled(rt: GeckoRuntime) {
         rt.webExtensionController.list().accept(
             { installedList ->
-                val existing = installedList?.firstOrNull {
-                    it.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID
+                val list = installedList.orEmpty()
+                list.forEach { ext ->
+                    val spec = ManagedExtensionsCatalog.findById(ext.id)
+                    if (spec != null) {
+                        installedExtensions[ext.id] = ext
+                        if (ext.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+                            onUBlockExtensionReady(rt, ext, "uBlock Origin active (Mozilla signed)")
+                        } else {
+                            val enabled = !disabledExtensionIdsCache.contains(ext.id)
+                            if (enabled) {
+                                rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
+                            } else {
+                                rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
+                            }
+                            val ver = ext.metaData.version.takeIf { it.isNotBlank() } ?: "Installed"
+                            updateManagedExtensionState(ext.id) {
+                                it.copy(
+                                    isInstalled = true,
+                                    isEnabled = enabled,
+                                    version = ver,
+                                    isUpdating = false,
+                                    statusDetail = if (enabled) "v$ver active (Mozilla signed)" else "v$ver paused"
+                                )
+                            }
+                        }
+                    }
                 }
-                if (existing != null) {
-                    onUBlockExtensionReady(rt, existing, "uBlock Origin active (Mozilla signed)")
-                } else {
+                if (!installedExtensions.containsKey(UBlockOriginUpdater.UBLOCK_EXTENSION_ID)) {
                     installBundledUBlockOrigin(rt)
                 }
             },
@@ -346,6 +377,7 @@ class GeckoEngineManager(private val context: Context) {
 
     private fun onUBlockExtensionReady(rt: GeckoRuntime, ext: WebExtension, detail: String) {
         uBlockExtension = ext
+        installedExtensions[ext.id] = ext
         val version = ext.metaData.version.takeIf { it.isNotBlank() } ?: UBlockOriginUpdater.BUNDLED_VERSION
         if (cachedAdBlockEnabled) {
             rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
@@ -359,10 +391,25 @@ class GeckoEngineManager(private val context: Context) {
             isUpdating = false,
             statusDetail = detail
         )
+        updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            it.copy(
+                isInstalled = true,
+                isEnabled = cachedAdBlockEnabled,
+                version = version,
+                isUpdating = false,
+                statusDetail = detail
+            )
+        }
     }
 
     fun setUBlockUpdating(updating: Boolean, detail: String? = null) {
         _uBlockState.update {
+            it.copy(
+                isUpdating = updating,
+                statusDetail = detail ?: it.statusDetail
+            )
+        }
+        updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
             it.copy(
                 isUpdating = updating,
                 statusDetail = detail ?: it.statusDetail
@@ -381,15 +428,150 @@ class GeckoEngineManager(private val context: Context) {
                 rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
             }
         }
+        val detail = if (enabled) {
+            "uBlock Origin v${_uBlockState.value.version} active (gorhill/uBlock)"
+        } else {
+            "uBlock Origin paused"
+        }
         _uBlockState.update {
-            it.copy(
-                isEnabled = enabled,
-                statusDetail = if (enabled) {
-                    "uBlock Origin v${it.version} active (gorhill/uBlock)"
+            it.copy(isEnabled = enabled, statusDetail = detail)
+        }
+        updateManagedExtensionState(UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            it.copy(isEnabled = enabled, statusDetail = detail)
+        }
+    }
+
+    fun applyDisabledExtensionIds(disabledIds: Set<String>) {
+        disabledExtensionIdsCache = disabledIds
+        val rt = runtime
+        ManagedExtensionsCatalog.ALL_SPECS.forEach { spec ->
+            if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) return@forEach
+            val enabled = !disabledIds.contains(spec.id)
+            val ext = installedExtensions[spec.id]
+            if (rt != null && ext != null) {
+                if (enabled) {
+                    rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
                 } else {
-                    "uBlock Origin paused"
+                    rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
+                }
+            }
+            updateManagedExtensionState(spec.id) { state ->
+                state.copy(
+                    isEnabled = enabled,
+                    statusDetail = if (state.isInstalled) {
+                        if (enabled) "v${state.version} active (Mozilla signed)" else "v${state.version} paused"
+                    } else {
+                        if (enabled) state.statusDetail else "Disabled by user"
+                    }
+                )
+            }
+        }
+    }
+
+    fun setManagedExtensionUpdating(extensionId: String, updating: Boolean, detail: String? = null) {
+        if (extensionId == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            setUBlockUpdating(updating, detail)
+            return
+        }
+        updateManagedExtensionState(extensionId) {
+            it.copy(
+                isUpdating = updating,
+                statusDetail = detail ?: it.statusDetail
+            )
+        }
+    }
+
+    fun setManagedExtensionEnabled(extensionId: String, enabled: Boolean) {
+        if (extensionId == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            setUBlockEnabled(enabled)
+            return
+        }
+        disabledExtensionIdsCache = if (enabled) {
+            disabledExtensionIdsCache - extensionId
+        } else {
+            disabledExtensionIdsCache + extensionId
+        }
+        val rt = runtime
+        val ext = installedExtensions[extensionId]
+        if (rt != null && ext != null) {
+            if (enabled) {
+                rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
+            } else {
+                rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
+            }
+        }
+        updateManagedExtensionState(extensionId) { state ->
+            state.copy(
+                isEnabled = enabled,
+                statusDetail = if (state.isInstalled) {
+                    if (enabled) "v${state.version} active (Mozilla signed)" else "v${state.version} paused"
+                } else {
+                    if (enabled) "Installing from Mozilla AMO..." else "Disabled by user"
                 }
             )
+        }
+    }
+
+    fun installManagedExtensionFromXpi(
+        rt: GeckoRuntime,
+        spec: ManagedExtensionSpec,
+        xpiFile: File,
+        expectedVersion: String,
+        enableAfterInstall: Boolean = true,
+        onComplete: ((Result<String>) -> Unit)? = null
+    ) {
+        if (spec.id == UBlockOriginUpdater.UBLOCK_EXTENSION_ID) {
+            installUBlockFromXpiFile(rt, xpiFile, expectedVersion, onComplete)
+            return
+        }
+        val fileUri = Uri.fromFile(xpiFile).toString()
+        rt.webExtensionController.install(fileUri).accept(
+            { ext ->
+                if (ext != null) {
+                    installedExtensions[spec.id] = ext
+                    val ver = ext.metaData.version.takeIf { it.isNotBlank() } ?: expectedVersion
+                    if (enableAfterInstall) {
+                        rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
+                    } else {
+                        rt.webExtensionController.disable(ext, WebExtensionController.EnableSource.USER)
+                    }
+                    updateManagedExtensionState(spec.id) {
+                        it.copy(
+                            isInstalled = true,
+                            isEnabled = enableAfterInstall,
+                            version = ver,
+                            isUpdating = false,
+                            statusDetail = if (enableAfterInstall) {
+                                "v$ver active (Mozilla signed)"
+                            } else {
+                                "v$ver installed (paused)"
+                            }
+                        )
+                    }
+                    onComplete?.invoke(Result.success(ver))
+                } else {
+                    val msg = "${spec.name} install returned null"
+                    updateManagedExtensionState(spec.id) { it.copy(isUpdating = false, statusDetail = msg) }
+                    onComplete?.invoke(Result.failure(IllegalStateException(msg)))
+                }
+            },
+            { err ->
+                val msg = err?.message ?: "XPI install error"
+                Log.e(TAG, "GeckoView failed to install ${spec.name}", err)
+                updateManagedExtensionState(spec.id) {
+                    it.copy(isUpdating = false, statusDetail = "Install warning: $msg")
+                }
+                onComplete?.invoke(Result.failure(err ?: IllegalStateException(msg)))
+            }
+        )
+    }
+
+    private fun updateManagedExtensionState(
+        extensionId: String,
+        transform: (ManagedExtensionState) -> ManagedExtensionState
+    ) {
+        _managedExtensions.update { list ->
+            list.map { item -> if (item.spec.id == extensionId) transform(item) else item }
         }
     }
 

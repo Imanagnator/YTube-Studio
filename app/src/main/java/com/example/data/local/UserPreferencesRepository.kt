@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.QualityOption
 import com.example.gecko.UBlockOriginUpdater
@@ -31,7 +32,8 @@ data class UserPrefs(
     val adsBlockedTotal: Long = 0L,
     val darkThemeEnabled: Boolean = true,
     val ytDlpVersion: String = "Bundled 0.18.1",
-    val uBlockVersion: String = UBlockOriginUpdater.BUNDLED_VERSION
+    val uBlockVersion: String = UBlockOriginUpdater.BUNDLED_VERSION,
+    val disabledExtensionIds: Set<String> = emptySet()
 )
 
 class UserPreferencesRepository(private val context: Context) {
@@ -54,6 +56,7 @@ class UserPreferencesRepository(private val context: Context) {
         val DARK_THEME = booleanPreferencesKey("dark_theme")
         val YTDLP_VERSION = stringPreferencesKey("ytdlp_version")
         val UBLOCK_VERSION = stringPreferencesKey("ublock_version")
+        val DISABLED_EXTENSION_IDS = stringSetPreferencesKey("disabled_extension_ids")
     }
 
     fun getBootDohUrlSync(): String {
@@ -77,7 +80,8 @@ class UserPreferencesRepository(private val context: Context) {
             adsBlockedTotal = prefs[Keys.ADS_BLOCKED_TOTAL] ?: 0L,
             darkThemeEnabled = prefs[Keys.DARK_THEME] ?: true,
             ytDlpVersion = prefs[Keys.YTDLP_VERSION] ?: "Bundled 0.18.1",
-            uBlockVersion = prefs[Keys.UBLOCK_VERSION] ?: UBlockOriginUpdater.BUNDLED_VERSION
+            uBlockVersion = prefs[Keys.UBLOCK_VERSION] ?: UBlockOriginUpdater.BUNDLED_VERSION,
+            disabledExtensionIds = prefs[Keys.DISABLED_EXTENSION_IDS] ?: emptySet()
         )
     }
 
@@ -139,5 +143,17 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setUBlockVersion(version: String) {
         context.dataStore.edit { it[Keys.UBLOCK_VERSION] = version }
+    }
+
+    suspend fun setExtensionEnabled(extensionId: String, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.DISABLED_EXTENSION_IDS]?.toMutableSet() ?: mutableSetOf()
+            if (enabled) {
+                current.remove(extensionId)
+            } else {
+                current.add(extensionId)
+            }
+            prefs[Keys.DISABLED_EXTENSION_IDS] = current
+        }
     }
 }
