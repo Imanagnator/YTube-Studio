@@ -92,9 +92,9 @@ YTube-Studio/
 
 ### Prerequisites
 
-- **JDK 17**
+- **JDK 21**
 - **Android SDK** (Compile SDK 37, Target SDK 36, Min SDK 29)
-- **Gradle 8.x+**
+- **Gradle 9.3.1+**
 
 ### Debug Build
 
